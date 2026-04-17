@@ -18,33 +18,38 @@
 package org.apache.spark.ml
 
 import scala.annotation.varargs
+import scala.reflect.runtime.universe.TypeTag
 
-import org.apache.spark.Logging
-import org.apache.spark.annotation.AlphaComponent
+import org.apache.spark.annotation.Since
+import org.apache.spark.internal.Logging
 import org.apache.spark.ml.param._
-import org.apache.spark.sql.SchemaRDD
-import org.apache.spark.sql.api.java.JavaSchemaRDD
-import org.apache.spark.sql.catalyst.analysis.Star
-import org.apache.spark.sql.catalyst.expressions.ScalaUdf
+import org.apache.spark.ml.param.shared._
+import org.apache.spark.ml.util.SchemaUtils
+import org.apache.spark.sql.{DataFrame, Dataset}
+import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
 
 /**
- * :: AlphaComponent ::
  * Abstract class for transformers that transform one dataset into another.
  */
-@AlphaComponent
-abstract class Transformer extends PipelineStage with Params {
+abstract class Transformer extends PipelineStage {
 
   /**
    * Transforms the dataset with optional parameters
    * @param dataset input dataset
-   * @param paramPairs optional list of param pairs, overwrite embedded params
+   * @param firstParamPair the first param pair, overwrite embedded params
+   * @param otherParamPairs other param pairs, overwrite embedded params
    * @return transformed dataset
    */
+  @Since("2.0.0")
   @varargs
-  def transform(dataset: SchemaRDD, paramPairs: ParamPair[_]*): SchemaRDD = {
+  def transform(
+      dataset: Dataset[_],
+      firstParamPair: ParamPair[_],
+      otherParamPairs: ParamPair[_]*): DataFrame = {
     val map = new ParamMap()
-    paramPairs.foreach(map.put(_))
+      .put(firstParamPair)
+      .put(otherParamPairs: _*)
     transform(dataset, map)
   }
 
@@ -54,40 +59,31 @@ abstract class Transformer extends PipelineStage with Params {
    * @param paramMap additional parameters, overwrite embedded params
    * @return transformed dataset
    */
-  def transform(dataset: SchemaRDD, paramMap: ParamMap): SchemaRDD
-
-  // Java-friendly versions of transform.
-
-  /**
-   * Transforms the dataset with optional parameters.
-   * @param dataset input datset
-   * @param paramPairs optional list of param pairs, overwrite embedded params
-   * @return transformed dataset
-   */
-  @varargs
-  def transform(dataset: JavaSchemaRDD, paramPairs: ParamPair[_]*): JavaSchemaRDD = {
-    transform(dataset.schemaRDD, paramPairs: _*).toJavaSchemaRDD
+  @Since("2.0.0")
+  def transform(dataset: Dataset[_], paramMap: ParamMap): DataFrame = {
+    this.copy(paramMap).transform(dataset)
   }
 
   /**
-   * Transforms the dataset with provided parameter map as additional parameters.
-   * @param dataset input dataset
-   * @param paramMap additional parameters, overwrite embedded params
-   * @return transformed dataset
+   * Transforms the input dataset.
    */
-  def transform(dataset: JavaSchemaRDD, paramMap: ParamMap): JavaSchemaRDD = {
-    transform(dataset.schemaRDD, paramMap).toJavaSchemaRDD
-  }
+  @Since("2.0.0")
+  def transform(dataset: Dataset[_]): DataFrame
+
+  override def copy(extra: ParamMap): Transformer
 }
 
 /**
  * Abstract class for transformers that take one input column, apply transformation, and output the
  * result as a new column.
  */
-private[ml] abstract class UnaryTransformer[IN, OUT, T <: UnaryTransformer[IN, OUT, T]]
+abstract class UnaryTransformer[IN: TypeTag, OUT: TypeTag, T <: UnaryTransformer[IN, OUT, T]]
   extends Transformer with HasInputCol with HasOutputCol with Logging {
 
+  /** @group setParam */
   def setInputCol(value: String): T = set(inputCol, value).asInstanceOf[T]
+
+  /** @group setParam */
   def setOutputCol(value: String): T = set(outputCol, value).asInstanceOf[T]
 
   /**
@@ -95,7 +91,7 @@ private[ml] abstract class UnaryTransformer[IN, OUT, T <: UnaryTransformer[IN, O
    * account of the embedded param map. So the param values should be determined solely by the input
    * param map.
    */
-  protected def createTransformFunc(paramMap: ParamMap): IN => OUT
+  protected def createTransformFunc: IN => OUT
 
   /**
    * Returns the data type of the output column.
@@ -107,23 +103,23 @@ private[ml] abstract class UnaryTransformer[IN, OUT, T <: UnaryTransformer[IN, O
    */
   protected def validateInputType(inputType: DataType): Unit = {}
 
-  override def transformSchema(schema: StructType, paramMap: ParamMap): StructType = {
-    val map = this.paramMap ++ paramMap
-    val inputType = schema(map(inputCol)).dataType
+  override def transformSchema(schema: StructType): StructType = {
+    val inputType = SchemaUtils.getSchemaFieldType(schema, $(inputCol))
     validateInputType(inputType)
-    if (schema.fieldNames.contains(map(outputCol))) {
-      throw new IllegalArgumentException(s"Output column ${map(outputCol)} already exists.")
+    if (schema.fieldNames.contains($(outputCol))) {
+      throw new IllegalArgumentException(s"Output column ${$(outputCol)} already exists.")
     }
     val outputFields = schema.fields :+
-      StructField(map(outputCol), outputDataType, !outputDataType.isPrimitive)
+      StructField($(outputCol), outputDataType, nullable = false)
     StructType(outputFields)
   }
 
-  override def transform(dataset: SchemaRDD, paramMap: ParamMap): SchemaRDD = {
-    transformSchema(dataset.schema, paramMap, logging = true)
-    import dataset.sqlContext._
-    val map = this.paramMap ++ paramMap
-    val udf = ScalaUdf(this.createTransformFunc(map), outputDataType, Seq(map(inputCol).attr))
-    dataset.select(Star(None), udf as map(outputCol))
+  override def transform(dataset: Dataset[_]): DataFrame = {
+    val outputSchema = transformSchema(dataset.schema, logging = true)
+    val transformUDF = udf(this.createTransformFunc)
+    dataset.withColumn($(outputCol), transformUDF(dataset($(inputCol))),
+      outputSchema($(outputCol)).metadata)
   }
+
+  override def copy(extra: ParamMap): T = defaultCopy(extra)
 }

@@ -17,50 +17,41 @@
 
 package org.apache.spark.ml.tuning;
 
-import java.io.Serializable;
+import java.io.IOException;
 import java.util.List;
 
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.Assertions;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
-import org.apache.spark.api.java.JavaSparkContext;
+import org.apache.spark.SharedSparkSession;
 import org.apache.spark.ml.classification.LogisticRegression;
 import org.apache.spark.ml.evaluation.BinaryClassificationEvaluator;
+import org.apache.spark.ml.feature.LabeledPoint;
 import org.apache.spark.ml.param.ParamMap;
-import org.apache.spark.mllib.regression.LabeledPoint;
-import org.apache.spark.sql.api.java.JavaSQLContext;
-import org.apache.spark.sql.api.java.JavaSchemaRDD;
-import static org.apache.spark.mllib.classification.LogisticRegressionSuite
-  .generateLogisticInputAsList;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
+import static org.apache.spark.ml.classification.LogisticRegressionSuite.generateLogisticInputAsList;
 
-public class JavaCrossValidatorSuite implements Serializable {
 
-  private transient JavaSparkContext jsc;
-  private transient JavaSQLContext jsql;
-  private transient JavaSchemaRDD dataset;
+public class JavaCrossValidatorSuite extends SharedSparkSession {
 
-  @Before
-  public void setUp() {
-    jsc = new JavaSparkContext("local", "JavaCrossValidatorSuite");
-    jsql = new JavaSQLContext(jsc);
+  private transient Dataset<Row> dataset;
+
+  @Override
+  @BeforeEach
+  public void setUp() throws IOException {
+    super.setUp();
     List<LabeledPoint> points = generateLogisticInputAsList(1.0, 1.0, 100, 42);
-    dataset = jsql.applySchema(jsc.parallelize(points, 2), LabeledPoint.class);
-  }
-
-  @After
-  public void tearDown() {
-    jsc.stop();
-    jsc = null;
+    dataset = spark.createDataFrame(jsc.parallelize(points, 2), LabeledPoint.class);
   }
 
   @Test
   public void crossValidationWithLogisticRegression() {
     LogisticRegression lr = new LogisticRegression();
     ParamMap[] lrParamMaps = new ParamGridBuilder()
-      .addGrid(lr.regParam(), new double[] {0.001, 1000.0})
-      .addGrid(lr.maxIter(), new int[] {0, 10})
+      .addGrid(lr.regParam(), new double[]{0.001, 1000.0})
+      .addGrid(lr.maxIter(), new int[]{0, 10})
       .build();
     BinaryClassificationEvaluator eval = new BinaryClassificationEvaluator();
     CrossValidator cv = new CrossValidator()
@@ -69,8 +60,8 @@ public class JavaCrossValidatorSuite implements Serializable {
       .setEvaluator(eval)
       .setNumFolds(3);
     CrossValidatorModel cvModel = cv.fit(dataset);
-    ParamMap bestParamMap = cvModel.bestModel().fittingParamMap();
-    Assert.assertEquals(0.001, bestParamMap.apply(lr.regParam()));
-    Assert.assertEquals(10, bestParamMap.apply(lr.maxIter()));
+    LogisticRegression parent = (LogisticRegression) cvModel.bestModel().parent();
+    Assertions.assertEquals(0.001, parent.getRegParam(), 0.0);
+    Assertions.assertEquals(10, parent.getMaxIter());
   }
 }

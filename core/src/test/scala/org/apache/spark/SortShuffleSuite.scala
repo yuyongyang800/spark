@@ -17,13 +17,60 @@
 
 package org.apache.spark
 
-import org.scalatest.BeforeAndAfterAll
+import scala.jdk.CollectionConverters._
 
-class SortShuffleSuite extends ShuffleSuite with BeforeAndAfterAll {
+import org.scalatest.matchers.should.Matchers._
+
+import org.apache.spark.internal.config.{SHUFFLE_CHECKSUM_ALGORITHM, SHUFFLE_MANAGER}
+import org.apache.spark.rdd.ShuffledRDD
+import org.apache.spark.serializer.{JavaSerializer, KryoSerializer}
+import org.apache.spark.shuffle.sort.SortShuffleManager
+import org.apache.spark.util.Utils
+
+class SortShuffleSuite extends ShuffleSuite {
 
   // This test suite should run all tests in ShuffleSuite with sort-based shuffle.
+  override def beforeAll(): Unit = {
+    super.beforeAll()
+    conf.set(SHUFFLE_MANAGER, "sort")
+  }
 
-  override def beforeAll() {
-    conf.set("spark.shuffle.manager", "sort")
+  test("SortShuffleManager properly cleans up files for shuffles that use the serialized path") {
+    sc = new SparkContext("local", "test", conf)
+    // Create a shuffled RDD and verify that it actually uses the new serialized map output path
+    val rdd = sc.parallelize(1 to 10, 1).map(x => (x, x))
+    val shuffledRdd = new ShuffledRDD[Int, Int, Int](rdd, new HashPartitioner(4))
+      .setSerializer(new KryoSerializer(conf))
+    val shuffleDep = shuffledRdd.dependencies.head.asInstanceOf[ShuffleDependency[_, _, _]]
+    assert(SortShuffleManager.canUseSerializedShuffle(shuffleDep))
+    ensureFilesAreCleanedUp(shuffledRdd)
+  }
+
+  test("SortShuffleManager properly cleans up files for shuffles that use the deserialized path") {
+    sc = new SparkContext("local", "test", conf)
+    // Create a shuffled RDD and verify that it actually uses the old deserialized map output path
+    val rdd = sc.parallelize(1 to 10, 1).map(x => (x, x))
+    val shuffledRdd = new ShuffledRDD[Int, Int, Int](rdd, new HashPartitioner(4))
+      .setSerializer(new JavaSerializer(conf))
+    val shuffleDep = shuffledRdd.dependencies.head.asInstanceOf[ShuffleDependency[_, _, _]]
+    assert(!SortShuffleManager.canUseSerializedShuffle(shuffleDep))
+    ensureFilesAreCleanedUp(shuffledRdd)
+  }
+
+  private def ensureFilesAreCleanedUp(shuffledRdd: ShuffledRDD[_, _, _]): Unit = {
+    def getAllFiles = Utils.listFiles(tempDir).asScala.toSet
+    val filesBeforeShuffle = getAllFiles
+    // Force the shuffle to be performed
+    shuffledRdd.count()
+    // Ensure that the shuffle actually created files that will need to be cleaned up
+    val filesCreatedByShuffle = getAllFiles -- filesBeforeShuffle
+    filesCreatedByShuffle.map(_.getName) should be(
+      Set("shuffle_0_0_0.data", s"shuffle_0_0_0.checksum.${conf.get(SHUFFLE_CHECKSUM_ALGORITHM)}",
+        "shuffle_0_0_0.index"))
+    // Check that the cleanup actually removes the files
+    sc.env.blockManager.master.removeShuffle(0, blocking = true)
+    for (file <- filesCreatedByShuffle) {
+      assert (!file.exists(), s"Shuffle file $file was not cleaned up")
+    }
   }
 }

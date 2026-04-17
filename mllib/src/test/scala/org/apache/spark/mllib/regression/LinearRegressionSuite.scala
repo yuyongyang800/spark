@@ -19,15 +19,22 @@ package org.apache.spark.mllib.regression
 
 import scala.util.Random
 
-import org.scalatest.FunSuite
-
+import org.apache.spark.SparkFunSuite
 import org.apache.spark.mllib.linalg.Vectors
-import org.apache.spark.mllib.util.{LocalClusterSparkContext, LinearDataGenerator,
+import org.apache.spark.mllib.util.{LinearDataGenerator, LocalClusterSparkContext,
   MLlibTestSparkContext}
+import org.apache.spark.util.ArrayImplicits._
+import org.apache.spark.util.Utils
 
-class LinearRegressionSuite extends FunSuite with MLlibTestSparkContext {
+private object LinearRegressionSuite {
 
-  def validatePrediction(predictions: Seq[Double], input: Seq[LabeledPoint]) {
+  /** 3 features */
+  val model = new LinearRegressionModel(weights = Vectors.dense(0.1, 0.2, 0.3), intercept = 0.5)
+}
+
+class LinearRegressionSuite extends SparkFunSuite with MLlibTestSparkContext {
+
+  def validatePrediction(predictions: Seq[Double], input: Seq[LabeledPoint]): Unit = {
     val numOffPredictions = predictions.zip(input).count { case (prediction, expected) =>
       // A prediction is off if the prediction is more than 0.5 away from expected value.
       math.abs(prediction - expected.label) > 0.5
@@ -40,7 +47,7 @@ class LinearRegressionSuite extends FunSuite with MLlibTestSparkContext {
   test("linear regression") {
     val testRDD = sc.parallelize(LinearDataGenerator.generateLinearInput(
       3.0, Array(10.0, 10.0), 100, 42), 2).cache()
-    val linReg = new LinearRegressionWithSGD().setIntercept(true)
+    val linReg = new LinearRegressionWithSGD(1.0, 100, 0.0, 1.0).setIntercept(true)
     linReg.optimizer.setNumIterations(1000).setStepSize(1.0)
 
     val model = linReg.run(testRDD)
@@ -56,7 +63,8 @@ class LinearRegressionSuite extends FunSuite with MLlibTestSparkContext {
     val validationRDD = sc.parallelize(validationData, 2).cache()
 
     // Test prediction on RDD.
-    validatePrediction(model.predict(validationRDD.map(_.features)).collect(), validationData)
+    validatePrediction(
+      model.predict(validationRDD.map(_.features)).collect().toImmutableArraySeq, validationData)
 
     // Test prediction on Array.
     validatePrediction(validationData.map(row => model.predict(row.features)), validationData)
@@ -66,7 +74,7 @@ class LinearRegressionSuite extends FunSuite with MLlibTestSparkContext {
   test("linear regression without intercept") {
     val testRDD = sc.parallelize(LinearDataGenerator.generateLinearInput(
       0.0, Array(10.0, 10.0), 100, 42), 2).cache()
-    val linReg = new LinearRegressionWithSGD().setIntercept(false)
+    val linReg = new LinearRegressionWithSGD(1.0, 100, 0.0, 1.0).setIntercept(false)
     linReg.optimizer.setNumIterations(1000).setStepSize(1.0)
 
     val model = linReg.run(testRDD)
@@ -83,7 +91,8 @@ class LinearRegressionSuite extends FunSuite with MLlibTestSparkContext {
     val validationRDD = sc.parallelize(validationData, 2).cache()
 
     // Test prediction on RDD.
-    validatePrediction(model.predict(validationRDD.map(_.features)).collect(), validationData)
+    validatePrediction(
+      model.predict(validationRDD.map(_.features)).collect().toImmutableArraySeq, validationData)
 
     // Test prediction on Array.
     validatePrediction(validationData.map(row => model.predict(row.features)), validationData)
@@ -97,7 +106,7 @@ class LinearRegressionSuite extends FunSuite with MLlibTestSparkContext {
       val sv = Vectors.sparse(10000, Seq((0, v(0)), (9999, v(1))))
       LabeledPoint(label, sv)
     }.cache()
-    val linReg = new LinearRegressionWithSGD().setIntercept(false)
+    val linReg = new LinearRegressionWithSGD(1.0, 100, 0.0, 1.0).setIntercept(false)
     linReg.optimizer.setNumIterations(1000).setStepSize(1.0)
 
     val model = linReg.run(sparseRDD)
@@ -118,15 +127,33 @@ class LinearRegressionSuite extends FunSuite with MLlibTestSparkContext {
 
       // Test prediction on RDD.
     validatePrediction(
-      model.predict(sparseValidationRDD.map(_.features)).collect(), sparseValidationData)
+      model.predict(
+        sparseValidationRDD.map(_.features)).collect().toImmutableArraySeq, sparseValidationData)
 
     // Test prediction on Array.
     validatePrediction(
       sparseValidationData.map(row => model.predict(row.features)), sparseValidationData)
   }
+
+  test("model save/load") {
+    val model = LinearRegressionSuite.model
+
+    val tempDir = Utils.createTempDir()
+    val path = tempDir.toURI.toString
+
+    // Save model, load it back, and compare.
+    try {
+      model.save(sc, path)
+      val sameModel = LinearRegressionModel.load(sc, path)
+      assert(model.weights == sameModel.weights)
+      assert(model.intercept == sameModel.intercept)
+    } finally {
+      Utils.deleteRecursively(tempDir)
+    }
+  }
 }
 
-class LinearRegressionClusterSuite extends FunSuite with LocalClusterSparkContext {
+class LinearRegressionClusterSuite extends SparkFunSuite with LocalClusterSparkContext {
 
   test("task size should be small in both training and prediction") {
     val m = 4
@@ -137,7 +164,7 @@ class LinearRegressionClusterSuite extends FunSuite with LocalClusterSparkContex
     }.cache()
     // If we serialize data directly in the task closure, the size of the serialized task would be
     // greater than 1MB and hence Spark would throw an error.
-    val model = LinearRegressionWithSGD.train(points, 2)
+    val model = new LinearRegressionWithSGD(1.0, 2, 0.0, 1.0).run(points)
     val predictions = model.predict(points.map(_.features))
   }
 }

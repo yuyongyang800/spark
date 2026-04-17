@@ -19,24 +19,24 @@ package org.apache.spark.streaming;
 
 import org.apache.spark.SparkConf;
 import org.apache.spark.streaming.api.java.JavaStreamingContext;
-import org.junit.After;
-import org.junit.Before;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 public abstract class LocalJavaStreamingContext {
 
     protected transient JavaStreamingContext ssc;
 
-    @Before
+    @BeforeEach
     public void setUp() {
         SparkConf conf = new SparkConf()
             .setMaster("local[2]")
             .setAppName("test")
-            .set("spark.streaming.clock", "org.apache.spark.streaming.util.ManualClock");
+            .set("spark.streaming.clock", "org.apache.spark.util.ManualClock");
         ssc = new JavaStreamingContext(conf, new Duration(1000));
         ssc.checkpoint("checkpoint");
     }
 
-    @After
+    @AfterEach
     public void tearDown() {
         ssc.stop();
         ssc = null;

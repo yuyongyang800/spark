@@ -17,9 +17,13 @@
 
 package org.apache.spark.graphx
 
-import org.apache.spark.storage.StorageLevel
-import org.apache.spark.{Logging, SparkContext}
+import java.util.concurrent.TimeUnit
+
+import org.apache.spark.SparkContext
 import org.apache.spark.graphx.impl.{EdgePartitionBuilder, GraphImpl}
+import org.apache.spark.internal.Logging
+import org.apache.spark.internal.LogKeys.TOTAL_TIME
+import org.apache.spark.storage.StorageLevel
 
 /**
  * Provides utilities for loading [[Graph]]s from files.
@@ -31,7 +35,7 @@ object GraphLoader extends Logging {
    * id and a target id. Skips lines that begin with `#`.
    *
    * If desired the edges can be automatically oriented in the positive
-   * direction (source Id < target Id) by setting `canonicalOrientation` to
+   * direction (source Id is less than target Id) by setting `canonicalOrientation` to
    * true.
    *
    * @example Loads a file in the following format:
@@ -62,7 +66,7 @@ object GraphLoader extends Logging {
       vertexStorageLevel: StorageLevel = StorageLevel.MEMORY_ONLY)
     : Graph[Int, Int] =
   {
-    val startTime = System.currentTimeMillis
+    val startTimeNs = System.nanoTime()
 
     // Parse the edge data table directly into edge partitions
     val lines =
@@ -77,7 +81,7 @@ object GraphLoader extends Logging {
         if (!line.isEmpty && line(0) != '#') {
           val lineArray = line.split("\\s+")
           if (lineArray.length < 2) {
-            logWarning("Invalid line: " + line)
+            throw new IllegalArgumentException("Invalid line: " + line)
           }
           val srcId = lineArray(0).toLong
           val dstId = lineArray(1).toLong
@@ -92,7 +96,9 @@ object GraphLoader extends Logging {
     }.persist(edgeStorageLevel).setName("GraphLoader.edgeListFile - edges (%s)".format(path))
     edges.count()
 
-    logInfo("It took %d ms to load the edges".format(System.currentTimeMillis - startTime))
+    logInfo(log"It took " +
+      log"${MDC(TOTAL_TIME, TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTimeNs))} ms " +
+      log"to load the edges")
 
     GraphImpl.fromEdgePartitions(edges, defaultVertexAttr = 1, edgeStorageLevel = edgeStorageLevel,
       vertexStorageLevel = vertexStorageLevel)

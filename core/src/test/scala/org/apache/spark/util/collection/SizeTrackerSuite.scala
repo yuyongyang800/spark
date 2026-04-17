@@ -17,14 +17,15 @@
 
 package org.apache.spark.util.collection
 
+import java.util.concurrent.TimeUnit
+
 import scala.reflect.ClassTag
 import scala.util.Random
 
-import org.scalatest.FunSuite
-
+import org.apache.spark.SparkFunSuite
 import org.apache.spark.util.SizeEstimator
 
-class SizeTrackerSuite extends FunSuite {
+class SizeTrackerSuite extends SparkFunSuite {
   val NORMAL_ERROR = 0.20
   val HIGH_ERROR = 0.30
 
@@ -39,7 +40,7 @@ class SizeTrackerSuite extends FunSuite {
   test("vector variable size insertions") {
     val rand = new Random(123456789)
     def randString(minLen: Int, maxLen: Int): String = {
-      "a" * (rand.nextInt(maxLen - minLen) + minLen)
+      "a".repeat(rand.nextInt(maxLen - minLen) + minLen)
     }
     testVector[String](10000, i => randString(0, 10))
     testVector[String](10000, i => randString(0, 100))
@@ -55,7 +56,7 @@ class SizeTrackerSuite extends FunSuite {
   test("map variable size insertions") {
     val rand = new Random(123456789)
     def randString(minLen: Int, maxLen: Int): String = {
-      "a" * (rand.nextInt(maxLen - minLen) + minLen)
+      "a".repeat(rand.nextInt(maxLen - minLen) + minLen)
     }
     testMap[Int, String](10000, i => (i, randString(0, 10)))
     testMap[Int, String](10000, i => (i, randString(0, 100)))
@@ -65,12 +66,12 @@ class SizeTrackerSuite extends FunSuite {
   test("map updates") {
     val rand = new Random(123456789)
     def randString(minLen: Int, maxLen: Int): String = {
-      "a" * (rand.nextInt(maxLen - minLen) + minLen)
+      "a".repeat(rand.nextInt(maxLen - minLen) + minLen)
     }
     testMap[String, Int](10000, i => (randString(0, 10000), i))
   }
 
-  def testVector[T: ClassTag](numElements: Int, makeElement: Int => T) {
+  def testVector[T: ClassTag](numElements: Int, makeElement: Int => T): Unit = {
     val vector = new SizeTrackingVector[T]
     for (i <- 0 until numElements) {
       val item = makeElement(i)
@@ -79,7 +80,7 @@ class SizeTrackerSuite extends FunSuite {
     }
   }
 
-  def testMap[K, V](numElements: Int, makeElement: (Int) => (K, V)) {
+  def testMap[K, V](numElements: Int, makeElement: (Int) => (K, V)): Unit = {
     val map = new SizeTrackingAppendOnlyMap[K, V]
     for (i <- 0 until numElements) {
       val (k, v) = makeElement(i)
@@ -88,7 +89,7 @@ class SizeTrackerSuite extends FunSuite {
     }
   }
 
-  def expectWithinError(obj: AnyRef, estimatedSize: Long, error: Double) {
+  def expectWithinError(obj: AnyRef, estimatedSize: Long, error: Double): Unit = {
     val betterEstimatedSize = SizeEstimator.estimate(obj)
     assert(betterEstimatedSize * (1 - error) < estimatedSize,
       s"Estimated size $estimatedSize was less than expected size $betterEstimatedSize")
@@ -103,8 +104,10 @@ private object SizeTrackerSuite {
    * Run speed tests for size tracking collections.
    */
   def main(args: Array[String]): Unit = {
-    if (args.size < 1) {
+    if (args.length < 1) {
+      // scalastyle:off println
       println("Usage: SizeTrackerSuite [num elements]")
+      // scalastyle:on println
       System.exit(1)
     }
     val numElements = args(0).toInt
@@ -181,17 +184,19 @@ private object SizeTrackerSuite {
       baseTimes: Seq[Long],
       sampledTimes: Seq[Long],
       unsampledTimes: Seq[Long]): Unit = {
+    // scalastyle:off println
     println(s"Average times for $testName (ms):")
     println("  Base - " + averageTime(baseTimes))
     println("  SizeTracker (sampled) - " + averageTime(sampledTimes))
     println("  SizeEstimator (unsampled) - " + averageTime(unsampledTimes))
     println()
+    // scalastyle:on println
   }
 
   def time(f: => Unit): Long = {
-    val start = System.currentTimeMillis()
+    val startNs = System.nanoTime()
     f
-    System.currentTimeMillis() - start
+    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startNs)
   }
 
   def averageTime(v: Seq[Long]): Long = {

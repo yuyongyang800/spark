@@ -17,55 +17,79 @@
 
 package org.apache.spark.sql.hive.thriftserver
 
-import scala.collection.JavaConversions._
+import java.io.PrintStream
+import java.nio.charset.StandardCharsets.UTF_8
 
-import org.apache.spark.scheduler.StatsReportListener
-import org.apache.spark.sql.hive.{HiveShim, HiveContext}
-import org.apache.spark.{Logging, SparkConf, SparkContext}
+import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.internal.Logging
+import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.hive.HiveExternalCatalog
+import org.apache.spark.sql.hive.HiveUtils._
+import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.sql.internal.StaticSQLConf.CATALOG_IMPLEMENTATION
+import org.apache.spark.util.Utils
 
-/** A singleton object for the master program. The slaves should not access this. */
+/** A singleton object for the master program. The executors should not access this. */
 private[hive] object SparkSQLEnv extends Logging {
   logDebug("Initializing SparkSQLEnv")
 
-  var hiveContext: HiveContext = _
+  val out = new PrintStream(System.out, true, UTF_8)
+  val err = new PrintStream(System.err, true, UTF_8)
+
+  var sparkSession: SparkSession = _
   var sparkContext: SparkContext = _
 
-  def init() {
-    if (hiveContext == null) {
+  def init(): Unit = {
+    if (sparkSession == null) {
       val sparkConf = new SparkConf(loadDefaults = true)
-      val maybeSerializer = sparkConf.getOption("spark.serializer")
-      val maybeKryoReferenceTracking = sparkConf.getOption("spark.kryo.referenceTracking")
+      // If user doesn't specify the appName, we want to get [SparkSQL::localHostName] instead of
+      // the default appName [SparkSQLCLIDriver] in cli or beeline.
+      val maybeAppName = sparkConf
+        .getOption("spark.app.name")
+        .filterNot(_ == classOf[SparkSQLCLIDriver].getName)
+        .filterNot(_ == classOf[HiveThriftServer2].getName)
 
       sparkConf
-        .setAppName(s"SparkSQL::${java.net.InetAddress.getLocalHost.getHostName}")
-        .set("spark.sql.hive.version", HiveShim.version)
-        .set(
-          "spark.serializer",
-          maybeSerializer.getOrElse("org.apache.spark.serializer.KryoSerializer"))
-        .set(
-          "spark.kryo.referenceTracking",
-          maybeKryoReferenceTracking.getOrElse("false"))
+        .setAppName(maybeAppName.getOrElse(s"SparkSQL::${Utils.localHostName()}"))
+        .set(SQLConf.DATETIME_JAVA8API_ENABLED, true)
 
-      sparkContext = new SparkContext(sparkConf)
-      sparkContext.addSparkListener(new StatsReportListener())
-      hiveContext = new HiveContext(sparkContext)
+      // if user specified in-memory explicitly, we bypass enable hive support.
+      val shouldUseInMemoryCatalog =
+        sparkConf.getOption(CATALOG_IMPLEMENTATION.key).contains("in-memory")
 
-      if (log.isDebugEnabled) {
-        hiveContext.hiveconf.getAllProperties.toSeq.sorted.foreach { case (k, v) =>
-          logDebug(s"HiveConf var: $k=$v")
-        }
+      val builder = SparkSession.builder()
+        .config(sparkConf)
+        .config(BUILTIN_HIVE_VERSION.key, builtinHiveVersion)
+
+      if (!shouldUseInMemoryCatalog) {
+        builder.enableHiveSupport()
+      }
+      sparkSession = builder.getOrCreate()
+      sparkContext = sparkSession.sparkContext
+
+      // SPARK-29604: force initialization of the session state with the Spark class loader,
+      // instead of having it happen during the initialization of the Hive client (which may use a
+      // different class loader).
+      sparkSession.sessionState
+
+      if (!shouldUseInMemoryCatalog) {
+        val metadataHive = sparkSession
+          .sharedState.externalCatalog.unwrapped.asInstanceOf[HiveExternalCatalog].client
+        metadataHive.setOut(out)
+        metadataHive.setInfo(err)
+        metadataHive.setError(err)
       }
     }
   }
 
   /** Cleans up and shuts down the Spark SQL environments. */
-  def stop() {
+  def stop(exitCode: Int = 0): Unit = {
     logDebug("Shutting down Spark SQL Environment")
     // Stop the SparkContext
     if (SparkSQLEnv.sparkContext != null) {
-      sparkContext.stop()
+      sparkContext.stop(exitCode)
       sparkContext = null
-      hiveContext = null
+      sparkSession = null
     }
   }
 }

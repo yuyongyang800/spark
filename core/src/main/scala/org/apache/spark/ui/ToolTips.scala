@@ -25,17 +25,26 @@ private[spark] object ToolTips {
        of task results."""
 
   val TASK_DESERIALIZATION_TIME =
-    """Time spent deserializating the task closure on the executor."""
+    """Time spent deserializing the task closure on the executor, including the time to read the
+       broadcasted task."""
+
+  val SHUFFLE_READ_FETCH_WAIT_TIME =
+    "Time that the task spent blocked waiting for shuffle data to be read from remote machines."
 
   val INPUT = "Bytes read from Hadoop or from Spark storage."
 
   val OUTPUT = "Bytes written to Hadoop."
 
-  val SHUFFLE_WRITE = "Bytes written to disk in order to be read by a shuffle in a future stage."
+  val SHUFFLE_WRITE =
+    "Bytes and records written to disk in order to be read by a shuffle in a future stage."
 
   val SHUFFLE_READ =
-    """Bytes read from remote executors. Typically less than shuffle write bytes
-       because this does not include shuffle data read locally."""
+    """Total shuffle bytes and records read (includes both data read locally and data read from
+       remote executors). """
+
+  val SHUFFLE_READ_REMOTE_SIZE =
+    """Total shuffle bytes read from remote executors. This is a subset of the shuffle
+       read bytes; the remaining shuffle data is read locally. """
 
   val GETTING_RESULT_TIME =
     """Time that the driver spends fetching task results from workers. If this is large, consider
@@ -48,4 +57,41 @@ private[spark] object ToolTips {
   val GC_TIME =
     """Time that the executor spent paused for Java garbage collection while the task was
        running."""
+
+  val PEAK_EXECUTION_MEMORY =
+    """Execution memory refers to the memory used by internal data structures created during
+       shuffles, aggregations and joins when Tungsten is enabled. The value of this accumulator
+       should be approximately the sum of the peak sizes across all such data structures created
+       in this task. For SQL jobs, this only tracks all unsafe operators, broadcast joins, and
+       external sort."""
+
+  val JOB_TIMELINE =
+    """Shows when jobs started and ended and when executors joined or left. Drag to scroll.
+       Click Enable Zooming and use mouse wheel to zoom in/out."""
+
+  val STAGE_TIMELINE =
+    """Shows when stages started and ended and when executors joined or left. Drag to scroll.
+       Click Enable Zooming and use mouse wheel to zoom in/out."""
+
+  val JOB_DAG =
+    """Shows a graph of stages executed for this job, each of which can contain
+       multiple RDD operations (e.g. map() and filter()), and of RDDs inside each operation
+       (shown as dots)."""
+
+  val STAGE_DAG =
+    """Shows a graph of RDD operations in this stage, and RDDs inside each one. A stage can run
+       multiple operations (e.g. two map() functions) if they can be pipelined. Some operations
+       also create multiple RDDs internally. Cached RDDs are shown in green.
+    """
+
+  val APPLICATION_EXECUTOR_LIMIT =
+    """Maximum number of executors that this application will use. This limit is finite only when
+       dynamic allocation is enabled. The number of granted executors may exceed the limit
+       ephemerally when executors are being killed.
+    """
+
+  val DURATION =
+    """Elapsed time since the first task of the stage was launched until execution completion of
+       all its tasks (Excluding the time of the stage waits to be launched after submitted).
+    """
 }

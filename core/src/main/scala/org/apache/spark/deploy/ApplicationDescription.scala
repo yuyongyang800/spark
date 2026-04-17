@@ -17,16 +17,29 @@
 
 package org.apache.spark.deploy
 
-private[spark] class ApplicationDescription(
-    val name: String,
-    val maxCores: Option[Int],
-    val memoryPerSlave: Int,
-    val command: Command,
-    var appUiUrl: String,
-    val eventLogDir: Option[String] = None)
-  extends Serializable {
+import java.net.URI
 
-  val user = System.getProperty("user.name", "<unknown>")
+import org.apache.spark.resource.{ResourceProfile, ResourceRequirement, ResourceUtils}
+
+private[spark] case class ApplicationDescription(
+    name: String,
+    maxCores: Option[Int],
+    command: Command,
+    appUiUrl: String,
+    defaultProfile: ResourceProfile,
+    eventLogDir: Option[URI] = None,
+    // short name of compression codec used when writing event logs, if any (e.g. lzf)
+    eventLogCodec: Option[String] = None,
+    // number of executors this application wants to start with,
+    // only used if dynamic allocation is enabled
+    initialExecutorLimit: Option[Int] = None,
+    user: String = System.getProperty("user.name", "<unknown>")) {
+
+  def memoryPerExecutorMB: Int = defaultProfile.getExecutorMemory.map(_.toInt).getOrElse(1024)
+  def coresPerExecutor: Option[Int] = defaultProfile.getExecutorCores
+  def resourceReqsPerExecutor: Seq[ResourceRequirement] =
+    ResourceUtils.executorResourceRequestToRequirement(
+      defaultProfile.getCustomExecutorResources().values.toSeq.sortBy(_.resourceName))
 
   override def toString: String = "ApplicationDescription(" + name + ")"
 }

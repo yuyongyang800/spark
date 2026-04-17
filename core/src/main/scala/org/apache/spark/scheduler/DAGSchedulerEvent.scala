@@ -19,13 +19,11 @@ package org.apache.spark.scheduler
 
 import java.util.Properties
 
-import scala.collection.mutable.Map
-import scala.language.existentials
+import scala.concurrent.Promise
 
 import org.apache.spark._
-import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.rdd.RDD
-import org.apache.spark.util.CallSite
+import org.apache.spark.util.{AccumulatorV2, CallSite}
 
 /**
  * Types of events that can be handled by the DAGScheduler. The DAGScheduler uses an event queue
@@ -35,24 +33,52 @@ import org.apache.spark.util.CallSite
  */
 private[scheduler] sealed trait DAGSchedulerEvent
 
+/** A result-yielding job was submitted on a target RDD */
 private[scheduler] case class JobSubmitted(
     jobId: Int,
     finalRDD: RDD[_],
     func: (TaskContext, Iterator[_]) => _,
     partitions: Array[Int],
-    allowLocal: Boolean,
     callSite: CallSite,
     listener: JobListener,
+    artifactSet: JobArtifactSet,
     properties: Properties = null)
   extends DAGSchedulerEvent
 
-private[scheduler] case class StageCancelled(stageId: Int) extends DAGSchedulerEvent
+/** A map stage as submitted to run as a separate job */
+private[scheduler] case class MapStageSubmitted(
+  jobId: Int,
+  dependency: ShuffleDependency[_, _, _],
+  callSite: CallSite,
+  listener: JobListener,
+  artifactSet: JobArtifactSet,
+  properties: Properties = null)
+  extends DAGSchedulerEvent
 
-private[scheduler] case class JobCancelled(jobId: Int) extends DAGSchedulerEvent
+private[scheduler] case class StageCancelled(
+    stageId: Int,
+    reason: Option[String])
+  extends DAGSchedulerEvent
 
-private[scheduler] case class JobGroupCancelled(groupId: String) extends DAGSchedulerEvent
+private[scheduler] case class JobCancelled(
+    jobId: Int,
+    reason: Option[String])
+  extends DAGSchedulerEvent
+
+private[scheduler] case class JobGroupCancelled(
+    groupId: String,
+    cancelFutureJobs: Boolean = false,
+    reason: Option[String])
+  extends DAGSchedulerEvent
+
+private[scheduler] case class JobTagCancelled(
+    tagName: String,
+    reason: Option[String],
+    cancelledJobs: Option[Promise[Seq[ActiveJob]]]) extends DAGSchedulerEvent
 
 private[scheduler] case object AllJobsCancelled extends DAGSchedulerEvent
+
+private[scheduler] case class CleanupQueryJobs(executionId: Long) extends DAGSchedulerEvent
 
 private[scheduler]
 case class BeginEvent(task: Task[_], taskInfo: TaskInfo) extends DAGSchedulerEvent
@@ -64,16 +90,47 @@ private[scheduler] case class CompletionEvent(
     task: Task[_],
     reason: TaskEndReason,
     result: Any,
-    accumUpdates: Map[Long, Any],
-    taskInfo: TaskInfo,
-    taskMetrics: TaskMetrics)
+    accumUpdates: Seq[AccumulatorV2[_, _]],
+    metricPeaks: Array[Long],
+    taskInfo: TaskInfo)
   extends DAGSchedulerEvent
 
 private[scheduler] case class ExecutorAdded(execId: String, host: String) extends DAGSchedulerEvent
 
-private[scheduler] case class ExecutorLost(execId: String) extends DAGSchedulerEvent
+private[scheduler] case class ExecutorLost(execId: String, reason: ExecutorLossReason)
+  extends DAGSchedulerEvent
+
+private[scheduler] case class WorkerRemoved(workerId: String, host: String, message: String)
+  extends DAGSchedulerEvent
 
 private[scheduler]
-case class TaskSetFailed(taskSet: TaskSet, reason: String) extends DAGSchedulerEvent
+case class StageFailed(stageId: Int, reason: String, exception: Option[Throwable])
+  extends DAGSchedulerEvent
+
+private[scheduler]
+case class TaskSetFailed(taskSet: TaskSet, reason: String, exception: Option[Throwable])
+  extends DAGSchedulerEvent
 
 private[scheduler] case object ResubmitFailedStages extends DAGSchedulerEvent
+
+private[scheduler]
+case class SpeculativeTaskSubmitted(task: Task[_], taskIndex: Int = -1) extends DAGSchedulerEvent
+
+private[scheduler]
+case class UnschedulableTaskSetAdded(stageId: Int, stageAttemptId: Int)
+  extends DAGSchedulerEvent
+
+private[scheduler]
+case class UnschedulableTaskSetRemoved(stageId: Int, stageAttemptId: Int)
+  extends DAGSchedulerEvent
+
+private[scheduler] case class RegisterMergeStatuses(
+    stage: ShuffleMapStage, mergeStatuses: Seq[(Int, MergeStatus)])
+  extends DAGSchedulerEvent
+
+private[scheduler] case class ShuffleMergeFinalized(stage: ShuffleMapStage)
+  extends DAGSchedulerEvent
+
+private[scheduler] case class ShufflePushCompleted(
+    shuffleId: Int, shuffleMergeId: Int, mapIndex: Int)
+  extends DAGSchedulerEvent

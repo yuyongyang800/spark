@@ -21,48 +21,123 @@ An interactive shell.
 This file is designed to be launched as a PYTHONSTARTUP script.
 """
 
-import sys
-if sys.version_info[0] != 2:
-    print("Error: Default Python used is Python%s" % sys.version_info.major)
-    print("\tSet env variable PYSPARK_PYTHON to Python2 binary and re-run it.")
-    sys.exit(1)
-
-
 import atexit
+import builtins
 import os
 import platform
+import warnings
+import sys
+
 import pyspark
-from pyspark.context import SparkContext
-from pyspark.storagelevel import StorageLevel
+from pyspark.core.context import SparkContext
+from pyspark.logger import SPARK_LOG_SCHEMA  # noqa: F401
+from pyspark.sql import SparkSession
+from pyspark.sql.context import SQLContext
+from pyspark.sql.utils import is_remote
+from urllib.parse import urlparse
 
-# this is the equivalent of ADD_JARS
-add_files = (os.environ.get("ADD_FILES").split(',')
-             if os.environ.get("ADD_FILES") is not None else None)
+if getattr(builtins, "__IPYTHON__", False):
+    # (Only) during PYTHONSTARTUP execution, IPython temporarily adds the parent
+    # directory of the script into the Python path, which results in searching
+    # packages under `pyspark` directory.
+    # For example, `import pandas` attempts to import `pyspark.pandas`, see also SPARK-42266.
+    if "__file__" in globals():
+        parent_dir = os.path.abspath(os.path.dirname(__file__))
+        if parent_dir in sys.path:
+            sys.path.remove(parent_dir)
 
-if os.environ.get("SPARK_EXECUTOR_URI"):
-    SparkContext.setSystemProperty("spark.executor.uri", os.environ["SPARK_EXECUTOR_URI"])
+if is_remote():
+    try:
+        # Creates pyspark.sql.connect.SparkSession.
+        spark = SparkSession.builder.getOrCreate()
 
-sc = SparkContext(appName="PySparkShell", pyFiles=add_files)
-atexit.register(lambda: sc.stop())
+        from pyspark.sql.connect.shell import PROGRESS_BAR_ENABLED
 
-print("""Welcome to
+        # Check if th eprogress bar needs to be disabled.
+        if PROGRESS_BAR_ENABLED not in os.environ:
+            os.environ[PROGRESS_BAR_ENABLED] = "1"
+        else:
+            val = os.getenv(PROGRESS_BAR_ENABLED, "false")
+            if val.lower().strip() == "false":
+                os.environ[PROGRESS_BAR_ENABLED] = "0"
+            elif val.lower().strip() == "true":
+                os.environ[PROGRESS_BAR_ENABLED] = "1"
+
+        val = os.environ[PROGRESS_BAR_ENABLED]
+        if val not in ("1", "0"):
+            raise ValueError(
+                f"Environment variable '{PROGRESS_BAR_ENABLED}' must "
+                f"be set to either 1 or 0, found: {val}"
+            )
+
+    except Exception:
+        import sys
+        import traceback
+
+        warnings.warn("Failed to initialize Spark session.")
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
+    version = pyspark.__version__
+    sc = None
+else:
+    if os.environ.get("SPARK_EXECUTOR_URI"):
+        SparkContext.setSystemProperty("spark.executor.uri", os.environ["SPARK_EXECUTOR_URI"])
+
+    SparkContext._ensure_initialized()
+
+    try:
+        spark = SparkSession._create_shell_session()
+    except Exception:
+        import sys
+        import traceback
+
+        warnings.warn("Failed to initialize Spark session.")
+        traceback.print_exc(file=sys.stderr)
+        sys.exit(1)
+
+    sc = spark.sparkContext
+    atexit.register((lambda sc: lambda: sc.stop())(sc))
+
+    # for compatibility
+    sqlContext = SQLContext._get_or_create(sc)
+    sqlCtx = sqlContext
+    version = sc.version
+
+sql = spark.sql
+
+print(
+    r"""Welcome to
       ____              __
      / __/__  ___ _____/ /__
     _\ \/ _ \/ _ `/ __/  '_/
    /__ / .__/\_,_/_/ /_/\_\   version %s
       /_/
-""" % sc.version)
-print("Using Python version %s (%s, %s)" % (
-    platform.python_version(),
-    platform.python_build()[0],
-    platform.python_build()[1]))
-print("SparkContext available as sc.")
+"""
+    % version
+)
+print(
+    "Using Python version %s (%s, %s)"
+    % (platform.python_version(), platform.python_build()[0], platform.python_build()[1])
+)
+if is_remote():
+    url = os.environ.get("SPARK_REMOTE", os.environ.get("MASTER", None))
+    assert url is not None
+    if url.startswith("local"):
+        url = "sc://localhost"  # only for display in the console.
+    print("Client connected to the Spark Connect server at %s" % urlparse(url).netloc)
+else:
+    print("Spark context Web UI available at %s" % (sc.uiWebUrl))  # type: ignore[union-attr]
+    print(
+        "Spark context available as 'sc' (master = %s, app id = %s)."
+        % (sc.master, sc.applicationId)  # type: ignore[union-attr]
+    )
 
-if add_files is not None:
-    print("Adding files: [%s]" % ", ".join(add_files))
+print("SparkSession available as 'spark'.")
 
 # The ./bin/pyspark script stores the old PYTHONSTARTUP value in OLD_PYTHONSTARTUP,
 # which allows us to execute the user's PYTHONSTARTUP file:
-_pythonstartup = os.environ.get('OLD_PYTHONSTARTUP')
+_pythonstartup = os.environ.get("OLD_PYTHONSTARTUP")
 if _pythonstartup and os.path.isfile(_pythonstartup):
-    execfile(_pythonstartup)
+    with open(_pythonstartup) as f:
+        code = compile(f.read(), _pythonstartup, "exec")
+        exec(code)

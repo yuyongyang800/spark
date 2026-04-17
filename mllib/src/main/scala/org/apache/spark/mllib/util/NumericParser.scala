@@ -19,7 +19,7 @@ package org.apache.spark.mllib.util
 
 import java.util.StringTokenizer
 
-import scala.collection.mutable.{ArrayBuffer, ListBuffer}
+import scala.collection.mutable.{ArrayBuilder, ListBuffer}
 
 import org.apache.spark.SparkException
 
@@ -51,7 +51,7 @@ private[mllib] object NumericParser {
   }
 
   private def parseArray(tokenizer: StringTokenizer): Array[Double] = {
-    val values = ArrayBuffer.empty[Double]
+    val values = ArrayBuilder.make[Double]
     var parsing = true
     var allowComma = false
     var token: String = null
@@ -67,14 +67,14 @@ private[mllib] object NumericParser {
         }
       } else {
         // expecting a number
-        values.append(parseDouble(token))
+        values += parseDouble(token)
         allowComma = true
       }
     }
     if (parsing) {
       throw new SparkException(s"An array must end with ']'.")
     }
-    values.toArray
+    values.result()
   }
 
   private def parseTuple(tokenizer: StringTokenizer): Seq[_] = {
@@ -85,10 +85,10 @@ private[mllib] object NumericParser {
     while (parsing && tokenizer.hasMoreTokens()) {
       token = tokenizer.nextToken()
       if (token == "(") {
-        items.append(parseTuple(tokenizer))
+        items += parseTuple(tokenizer)
         allowComma = true
       } else if (token == "[") {
-        items.append(parseArray(tokenizer))
+        items += parseArray(tokenizer)
         allowComma = true
       } else if (token == ",") {
         if (allowComma) {
@@ -98,23 +98,25 @@ private[mllib] object NumericParser {
         }
       } else if (token == ")") {
         parsing = false
+      } else if (token.trim.isEmpty) {
+          // ignore whitespaces between delim chars, e.g. ", ["
       } else {
         // expecting a number
-        items.append(parseDouble(token))
+        items += parseDouble(token)
         allowComma = true
       }
     }
     if (parsing) {
       throw new SparkException(s"A tuple must end with ')'.")
     }
-    items
+    items.toSeq
   }
 
   private def parseDouble(s: String): Double = {
     try {
       java.lang.Double.parseDouble(s)
     } catch {
-      case e: Throwable =>
+      case e: NumberFormatException =>
         throw new SparkException(s"Cannot parse a double from: $s", e)
     }
   }

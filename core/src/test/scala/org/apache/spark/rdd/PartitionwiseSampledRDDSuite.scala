@@ -17,9 +17,8 @@
 
 package org.apache.spark.rdd
 
-import org.scalatest.FunSuite
-
-import org.apache.spark.SharedSparkContext
+import org.apache.spark.{SharedSparkContext, SparkFunSuite}
+import org.apache.spark.util.ArrayImplicits._
 import org.apache.spark.util.random.{BernoulliSampler, PoissonSampler, RandomSampler}
 
 /** a sampler that outputs its seed */
@@ -27,24 +26,26 @@ class MockSampler extends RandomSampler[Long, Long] {
 
   private var s: Long = _
 
-  override def setSeed(seed: Long) {
+  override def setSeed(seed: Long): Unit = {
     s = seed
   }
+
+  override def sample(): Int = 1
 
   override def sample(items: Iterator[Long]): Iterator[Long] = {
     Iterator(s)
   }
 
-  override def clone = new MockSampler
+  override def clone: MockSampler = new MockSampler
 }
 
-class PartitionwiseSampledRDDSuite extends FunSuite with SharedSparkContext {
+class PartitionwiseSampledRDDSuite extends SparkFunSuite with SharedSparkContext {
 
   test("seed distribution") {
-    val rdd = sc.makeRDD(Array(1L, 2L, 3L, 4L), 2)
+    val rdd = sc.makeRDD(Array(1L, 2L, 3L, 4L).toImmutableArraySeq, 2)
     val sampler = new MockSampler
     val sample = new PartitionwiseSampledRDD[Long, Long](rdd, sampler, false, 0L)
-    assert(sample.distinct().count == 2, "Seeds must be different.")
+    assert(sample.distinct().count() == 2, "Seeds must be different.")
   }
 
   test("concurrency") {

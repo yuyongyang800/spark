@@ -1,34 +1,50 @@
-scalaVersion := "2.10.4"
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one or more
+ * contributor license agreements.  See the NOTICE file distributed with
+ * this work for additional information regarding copyright ownership.
+ * The ASF licenses this file to You under the Apache License, Version 2.0
+ * (the "License"); you may not use this file except in compliance with
+ * the License.  You may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
-resolvers += Resolver.url("artifactory", url("http://scalasbt.artifactoryonline.com/scalasbt/sbt-plugin-releases"))(Resolver.ivyStylePatterns)
+addSbtPlugin("software.purpledragon" % "sbt-checkstyle-plugin" % "4.0.1")
 
-resolvers += "Typesafe Repository" at "http://repo.typesafe.com/typesafe/releases/"
+// If you are changing the dependency setting for checkstyle plugin,
+// please check pom.xml in the root of the source tree too.
+libraryDependencies += "com.puppycrawl.tools" % "checkstyle" % "11.0.1"
 
-resolvers += "sonatype-releases" at "https://oss.sonatype.org/content/repositories/releases/"
+addSbtPlugin("com.eed3si9n" % "sbt-assembly" % "2.3.1")
 
-addSbtPlugin("com.eed3si9n" % "sbt-assembly" % "0.11.2")
+addSbtPlugin("com.github.sbt" % "sbt-eclipse" % "6.2.0")
 
-addSbtPlugin("com.typesafe.sbteclipse" % "sbteclipse-plugin" % "2.2.0")
+addSbtPlugin("org.scalastyle" %% "scalastyle-sbt-plugin" % "1.0.0")
 
-addSbtPlugin("com.github.mpeltonen" % "sbt-idea" % "1.6.0")
+addSbtPlugin("com.typesafe" % "sbt-mima-plugin" % "1.1.4")
 
-// For Sonatype publishing
-//resolvers += Resolver.url("sbt-plugin-releases", new URL("http://scalasbt.artifactoryonline.com/scalasbt/sbt-plugin-releases/"))(Resolver.ivyStylePatterns)
+addSbtPlugin("com.github.sbt" % "sbt-unidoc" % "0.5.0")
 
-//addSbtPlugin("com.jsuereth" % "xsbt-gpg-plugin" % "0.6")
+addSbtPlugin("io.spray" % "sbt-revolver" % "0.10.0")
 
-addSbtPlugin("net.virtual-void" % "sbt-dependency-graph" % "0.7.4")
+libraryDependencies += "org.ow2.asm"  % "asm" % "9.9.1"
 
-addSbtPlugin("org.scalastyle" %% "scalastyle-sbt-plugin" % "0.6.0")
+libraryDependencies += "org.ow2.asm"  % "asm-commons" % "9.9.1"
 
-addSbtPlugin("com.typesafe" % "sbt-mima-plugin" % "0.1.6")
+addSbtPlugin("com.simplytyped" % "sbt-antlr4" % "0.8.3")
 
-addSbtPlugin("com.alpinenow" % "junit_xml_listener" % "0.5.1")
+addSbtPlugin("com.github.sbt" % "sbt-pom-reader" % "2.5.0")
 
-addSbtPlugin("com.eed3si9n" % "sbt-unidoc" % "0.3.1")
+addSbtPlugin("com.github.sbt.junit" % "sbt-jupiter-interface" % "0.17.0")
 
-addSbtPlugin("com.cavorite" % "sbt-avro" % "0.3.2")
+addSbtPlugin("com.thesamet" % "sbt-protoc" % "1.0.7")
 
-libraryDependencies += "org.ow2.asm"  % "asm" % "5.0.3"
+addSbtPlugin("com.here.platform" % "sbt-bom" % "1.0.29")
 
-libraryDependencies += "org.ow2.asm"  % "asm-commons" % "5.0.3"
+addSbtPlugin("ch.epfl.scala" % "sbt-bloop" % "2.0.17")

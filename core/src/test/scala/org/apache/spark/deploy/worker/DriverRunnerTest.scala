@@ -19,21 +19,29 @@ package org.apache.spark.deploy.worker
 
 import java.io.File
 
+import scala.concurrent.duration._
+
+import org.mockito.ArgumentMatchers.{any, anyInt}
 import org.mockito.Mockito._
-import org.mockito.Matchers._
 import org.mockito.invocation.InvocationOnMock
-import org.mockito.stubbing.Answer
-import org.scalatest.FunSuite
+import org.scalatest.concurrent.Eventually.{eventually, interval, timeout}
 
-import org.apache.spark.SparkConf
+import org.apache.spark.{SecurityManager, SparkConf, SparkFunSuite}
 import org.apache.spark.deploy.{Command, DriverDescription}
+import org.apache.spark.deploy.master.DriverState
+import org.apache.spark.rpc.RpcEndpointRef
+import org.apache.spark.util.Clock
 
-class DriverRunnerTest extends FunSuite {
+class DriverRunnerTest extends SparkFunSuite {
   private def createDriverRunner() = {
     val command = new Command("mainClass", Seq(), Map(), Seq(), Seq(), Seq())
     val driverDescription = new DriverDescription("jarUrl", 512, 1, true, command)
-    new DriverRunner(new SparkConf(), "driverId", new File("workDir"), new File("sparkHome"),
-      driverDescription, null, "akka://1.2.3.4/worker/")
+    val conf = new SparkConf()
+    val worker = mock(classOf[RpcEndpointRef])
+    doNothing().when(worker).send(any())
+    spy[DriverRunner](new DriverRunner(conf, "driverId", new File("workDir"), new File("sparkHome"),
+      driverDescription, worker, "spark://1.2.3.4/worker/", "http://publicAddress:80",
+      new SecurityManager(conf)))
   }
 
   private def createProcessBuilderAndProcess(): (ProcessBuilderLike, Process) = {
@@ -42,6 +50,17 @@ class DriverRunnerTest extends FunSuite {
     val process = mock(classOf[Process])
     when(processBuilder.start()).thenReturn(process)
     (processBuilder, process)
+  }
+
+  private def createTestableDriverRunner(
+      processBuilder: ProcessBuilderLike,
+      superviseRetry: Boolean) = {
+    val runner = createDriverRunner()
+    runner.setSleeper(mock(classOf[Sleeper]))
+    doAnswer { (_: InvocationOnMock) =>
+      runner.runCommandWithRetry(processBuilder, p => (), supervise = superviseRetry)
+    }.when(runner).prepareAndRunDriver()
+    runner
   }
 
   test("Process succeeds instantly") {
@@ -99,11 +118,9 @@ class DriverRunnerTest extends FunSuite {
     runner.setSleeper(sleeper)
 
     val (processBuilder, process) = createProcessBuilderAndProcess()
-    when(process.waitFor()).thenAnswer(new Answer[Int] {
-      def answer(invocation: InvocationOnMock): Int = {
-        runner.kill()
-        -1
-      }
+    when(process.waitFor()).thenAnswer((_: InvocationOnMock) => {
+      runner.kill()
+      -1
     })
 
     runner.runCommandWithRetry(processBuilder, p => (), supervise = true)
@@ -129,7 +146,7 @@ class DriverRunnerTest extends FunSuite {
       .thenReturn(-1) // fail 3
       .thenReturn(-1) // fail 4
       .thenReturn(0) // success
-    when(clock.currentTimeMillis())
+    when(clock.getTimeMillis())
       .thenReturn(0).thenReturn(1000) // fail 1 (short)
       .thenReturn(1000).thenReturn(2000) // fail 2 (short)
       .thenReturn(2000).thenReturn(10000) // fail 3 (long)
@@ -144,4 +161,51 @@ class DriverRunnerTest extends FunSuite {
     verify(sleeper, times(2)).sleep(2)
   }
 
+  test("Kill process finalized with state KILLED") {
+    val (processBuilder, process) = createProcessBuilderAndProcess()
+    val runner = createTestableDriverRunner(processBuilder, superviseRetry = true)
+
+    when(process.waitFor()).thenAnswer((_: InvocationOnMock) => {
+      runner.kill()
+      -1
+    })
+
+    runner.start()
+
+    eventually(timeout(10.seconds), interval(100.millis)) {
+      assert(runner.finalState.get === DriverState.KILLED)
+    }
+    verify(process, times(1)).waitFor()
+  }
+
+  test("Finalized with state FINISHED") {
+    val (processBuilder, process) = createProcessBuilderAndProcess()
+    val runner = createTestableDriverRunner(processBuilder, superviseRetry = true)
+    when(process.waitFor()).thenReturn(0)
+    runner.start()
+    eventually(timeout(10.seconds), interval(100.millis)) {
+      assert(runner.finalState.get === DriverState.FINISHED)
+    }
+  }
+
+  test("Finalized with state FAILED") {
+    val (processBuilder, process) = createProcessBuilderAndProcess()
+    val runner = createTestableDriverRunner(processBuilder, superviseRetry = false)
+    when(process.waitFor()).thenReturn(-1)
+    runner.start()
+    eventually(timeout(10.seconds), interval(100.millis)) {
+      assert(runner.finalState.get === DriverState.FAILED)
+    }
+  }
+
+  test("Handle exception starting process") {
+    val (processBuilder, process) = createProcessBuilderAndProcess()
+    val runner = createTestableDriverRunner(processBuilder, superviseRetry = false)
+    when(processBuilder.start()).thenThrow(new NullPointerException("bad command list"))
+    runner.start()
+    eventually(timeout(10.seconds), interval(100.millis)) {
+      assert(runner.finalState.get === DriverState.ERROR)
+      assert(runner.finalException.get.isInstanceOf[RuntimeException])
+    }
+  }
 }

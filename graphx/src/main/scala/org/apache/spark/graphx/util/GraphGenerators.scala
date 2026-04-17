@@ -18,22 +18,17 @@
 package org.apache.spark.graphx.util
 
 import scala.annotation.tailrec
-import scala.math._
+import scala.collection.mutable
 import scala.reflect.ClassTag
 import scala.util._
 
 import org.apache.spark._
-import org.apache.spark.serializer._
-import org.apache.spark.rdd.RDD
-import org.apache.spark.SparkContext
-import org.apache.spark.SparkContext._
 import org.apache.spark.graphx._
-import org.apache.spark.graphx.Graph
-import org.apache.spark.graphx.Edge
-import org.apache.spark.graphx.impl.GraphImpl
+import org.apache.spark.internal.Logging
+import org.apache.spark.rdd.RDD
 
 /** A collection of graph generating functions. */
-object GraphGenerators {
+object GraphGenerators extends Logging {
 
   val RMATa = 0.45
   val RMATb = 0.15
@@ -92,11 +87,10 @@ object GraphGenerators {
   }
 
   /**
-   * Randomly samples from a log normal distribution whose corresponding normal distribution has
-   * the given mean and standard deviation. It uses the formula `X = exp(m+s*Z)` where `m`,
-   * `s` are the mean, standard deviation of the lognormal distribution and
-   * `Z ~ N(0, 1)`. In this function,
-   * `m = e^(mu+sigma^2/2)` and `s = sqrt[(e^(sigma^2) - 1)(e^(2*mu+sigma^2))]`.
+   * Randomly samples from the given mean and standard deviation of the normal distribution.
+   * It uses the formula `X = exp(mu+sigma*Z)` where `mu`,
+   * `sigma` are the mean, standard deviation of the normal distribution and
+   * `Z ~ N(0, 1)`.
    *
    * @param mu the mean of the normal distribution
    * @param sigma the standard deviation of the normal distribution
@@ -107,10 +101,6 @@ object GraphGenerators {
       mu: Double, sigma: Double, maxVal: Int, seed: Long = -1): Int = {
     val rand = if (seed == -1) new Random() else new Random(seed)
 
-    val sigmaSq = sigma * sigma
-    val m = math.exp(mu + sigmaSq / 2.0)
-    // expm1 is exp(m)-1 with better accuracy for tiny m
-    val s = math.sqrt(math.expm1(sigmaSq) * math.exp(2*mu + sigmaSq))
     // Z ~ N(0, 1)
     var X: Double = maxVal
 
@@ -125,7 +115,7 @@ object GraphGenerators {
    * A random graph generator using the R-MAT model, proposed in
    * "R-MAT: A Recursive Model for Graph Mining" by Chakrabarti et al.
    *
-   * See [[http://www.cs.cmu.edu/~christos/PUBLICATIONS/siam04.pdf]].
+   * See http://www.cs.cmu.edu/~christos/PUBLICATIONS/siam04.pdf.
    */
   def rmatGraph(sc: SparkContext, requestedNumVertices: Int, numEdges: Int): Graph[Int, Int] = {
     // let N = requestedNumVertices
@@ -133,10 +123,16 @@ object GraphGenerators {
     // This ensures that the 4 quadrants are the same size at all recursion levels
     val numVertices = math.round(
       math.pow(2.0, math.ceil(math.log(requestedNumVertices) / math.log(2.0)))).toInt
-    var edges: Set[Edge[Int]] = Set()
+    val numEdgesUpperBound =
+      math.pow(2.0, 2 * ((math.log(numVertices) / math.log(2.0)) - 1)).toInt
+    if (numEdgesUpperBound < numEdges) {
+      throw new IllegalArgumentException(
+        s"numEdges must be <= $numEdgesUpperBound but was $numEdges")
+    }
+    val edges = mutable.Set.empty[Edge[Int]]
     while (edges.size < numEdges) {
       if (edges.size % 100 == 0) {
-        println(edges.size + " edges")
+        logDebug(s"${edges.size} edges")
       }
       edges += addEdge(numVertices)
     }
@@ -163,7 +159,7 @@ object GraphGenerators {
   }
 
   /**
-   * This method recursively subdivides the the adjacency matrix into quadrants
+   * This method recursively subdivides the adjacency matrix into quadrants
    * until it picks a single cell. The naming conventions in this paper match
    * those of the R-MAT paper. There are a power of 2 number of nodes in the graph.
    * The adjacency matrix looks like:
@@ -209,7 +205,6 @@ object GraphGenerators {
     }
   }
 
-  // TODO(crankshaw) turn result into an enum (or case class for pattern matching}
   private def pickQuadrant(a: Double, b: Double, c: Double, d: Double): Int = {
     if (a + b + c + d != 1.0) {
       throw new IllegalArgumentException("R-MAT probability parameters sum to " + (a + b + c + d)
@@ -237,14 +232,15 @@ object GraphGenerators {
    * @return A graph containing vertices with the row and column ids
    * as their attributes and edge values as 1.0.
    */
-  def gridGraph(sc: SparkContext, rows: Int, cols: Int): Graph[(Int,Int), Double] = {
+  def gridGraph(sc: SparkContext, rows: Int, cols: Int): Graph[(Int, Int), Double] = {
     // Convert row column address into vertex ids (row major order)
     def sub2ind(r: Int, c: Int): VertexId = r * cols + c
 
-    val vertices: RDD[(VertexId, (Int,Int))] =
-      sc.parallelize(0 until rows).flatMap( r => (0 until cols).map( c => (sub2ind(r,c), (r,c)) ) )
+    val vertices: RDD[(VertexId, (Int, Int))] = sc.parallelize(0 until rows).flatMap { r =>
+      (0 until cols).map( c => (sub2ind(r, c), (r, c)) )
+    }
     val edges: RDD[Edge[Double]] =
-      vertices.flatMap{ case (vid, (r,c)) =>
+      vertices.flatMap{ case (vid, (r, c)) =>
         (if (r + 1 < rows) { Seq( (sub2ind(r, c), sub2ind(r + 1, c))) } else { Seq.empty }) ++
         (if (c + 1 < cols) { Seq( (sub2ind(r, c), sub2ind(r, c + 1))) } else { Seq.empty })
       }.map{ case (src, dst) => Edge(src, dst, 1.0) }

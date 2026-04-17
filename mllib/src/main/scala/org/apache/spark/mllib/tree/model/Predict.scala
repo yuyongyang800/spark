@@ -17,19 +17,30 @@
 
 package org.apache.spark.mllib.tree.model
 
-import org.apache.spark.annotation.DeveloperApi
+import java.util.Objects
+
+import org.apache.spark.annotation.Since
 
 /**
  * Predicted value for a node
  * @param predict predicted value
  * @param prob probability of the label (classification only)
  */
-@DeveloperApi
-class Predict(
-    val predict: Double,
-    val prob: Double = 0.0) extends Serializable {
+@Since("1.2.0")
+class Predict @Since("1.2.0") (
+    @Since("1.2.0") val predict: Double,
+    @Since("1.2.0") val prob: Double = 0.0) extends Serializable {
 
-  override def toString = {
-    "predict = %f, prob = %f".format(predict, prob)
+  override def toString: String = s"$predict (prob = $prob)"
+
+  override def equals(other: Any): Boolean = {
+    other match {
+      case p: Predict => predict == p.predict && prob == p.prob
+      case _ => false
+    }
+  }
+
+  override def hashCode: Int = {
+    Objects.hash(predict: java.lang.Double, prob: java.lang.Double)
   }
 }

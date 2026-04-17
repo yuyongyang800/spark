@@ -17,7 +17,7 @@
 
 package org.apache.spark.graphx.impl
 
-import scala.reflect.{classTag, ClassTag}
+import scala.reflect.ClassTag
 
 import org.apache.spark.graphx._
 import org.apache.spark.graphx.util.collection.GraphXPrimitiveKeyOpenHashMap
@@ -151,13 +151,13 @@ class EdgePartition[
    *         applied to each edge
    */
   def map[ED2: ClassTag](f: Edge[ED] => ED2): EdgePartition[ED2, VD] = {
-    val newData = new Array[ED2](data.size)
+    val newData = new Array[ED2](data.length)
     val edge = new Edge[ED]()
-    val size = data.size
+    val size = data.length
     var i = 0
     while (i < size) {
-      edge.srcId  = srcIds(i)
-      edge.dstId  = dstIds(i)
+      edge.srcId = srcIds(i)
+      edge.dstId = dstIds(i)
       edge.attr = data(i)
       newData(i) = f(edge)
       i += 1
@@ -179,13 +179,13 @@ class EdgePartition[
    */
   def map[ED2: ClassTag](iter: Iterator[ED2]): EdgePartition[ED2, VD] = {
     // Faster than iter.toArray, because the expected size is known.
-    val newData = new Array[ED2](data.size)
+    val newData = new Array[ED2](data.length)
     var i = 0
     while (iter.hasNext) {
       newData(i) = iter.next()
       i += 1
     }
-    assert(newData.size == i)
+    assert(newData.length == i)
     this.withData(newData)
   }
 
@@ -222,7 +222,7 @@ class EdgePartition[
    *
    * @param f an external state mutating user defined function.
    */
-  def foreach(f: Edge[ED] => Unit) {
+  def foreach(f: Edge[ED] => Unit): Unit = {
     iterator.foreach(f)
   }
 
@@ -311,7 +311,7 @@ class EdgePartition[
    *
    * @return size of the partition
    */
-  val size: Int = localSrcIds.size
+  val size: Int = localSrcIds.length
 
   /** The number of unique source vertices in the partition. */
   def indexSize: Int = index.size
@@ -324,7 +324,7 @@ class EdgePartition[
    *
    * @return an iterator over edges in the partition
    */
-  def iterator = new Iterator[Edge[ED]] {
+  def iterator: Iterator[Edge[ED]] = new Iterator[Edge[ED]] {
     private[this] val edge = new Edge[ED]
     private[this] var pos = 0
 
@@ -351,7 +351,7 @@ class EdgePartition[
 
     override def hasNext: Boolean = pos < EdgePartition.this.size
 
-    override def next() = {
+    override def next(): EdgeTriplet[VD, ED] = {
       val triplet = new EdgeTriplet[VD, ED]
       val localSrcId = localSrcIds(pos)
       val localDstId = localDstIds(pos)
@@ -388,7 +388,7 @@ class EdgePartition[
     val aggregates = new Array[A](vertexAttrs.length)
     val bitset = new BitSet(vertexAttrs.length)
 
-    var ctx = new AggregatingEdgeContext[VD, ED, A](mergeMsg, aggregates, bitset)
+    val ctx = new AggregatingEdgeContext[VD, ED, A](mergeMsg, aggregates, bitset)
     var i = 0
     while (i < size) {
       val localSrcId = localSrcIds(i)
@@ -433,7 +433,7 @@ class EdgePartition[
     val aggregates = new Array[A](vertexAttrs.length)
     val bitset = new BitSet(vertexAttrs.length)
 
-    var ctx = new AggregatingEdgeContext[VD, ED, A](mergeMsg, aggregates, bitset)
+    val ctx = new AggregatingEdgeContext[VD, ED, A](mergeMsg, aggregates, bitset)
     index.iterator.foreach { cluster =>
       val clusterSrcId = cluster._1
       val clusterPos = cluster._2
@@ -465,7 +465,7 @@ class EdgePartition[
           if (edgeIsActive) {
             val dstAttr =
               if (tripletFields.useDst) vertexAttrs(localDstId) else null.asInstanceOf[VD]
-            ctx.setRest(dstId, localDstId, dstAttr, data(pos))
+            ctx.setDest(dstId, localDstId, dstAttr, data(pos))
             sendMsg(ctx)
           }
           pos += 1
@@ -495,7 +495,7 @@ private class AggregatingEdgeContext[VD, ED, A](
       srcId: VertexId, dstId: VertexId,
       localSrcId: Int, localDstId: Int,
       srcAttr: VD, dstAttr: VD,
-      attr: ED) {
+      attr: ED): Unit = {
     _srcId = srcId
     _dstId = dstId
     _localSrcId = localSrcId
@@ -505,33 +505,33 @@ private class AggregatingEdgeContext[VD, ED, A](
     _attr = attr
   }
 
-  def setSrcOnly(srcId: VertexId, localSrcId: Int, srcAttr: VD) {
+  def setSrcOnly(srcId: VertexId, localSrcId: Int, srcAttr: VD): Unit = {
     _srcId = srcId
     _localSrcId = localSrcId
     _srcAttr = srcAttr
   }
 
-  def setRest(dstId: VertexId, localDstId: Int, dstAttr: VD, attr: ED) {
+  def setDest(dstId: VertexId, localDstId: Int, dstAttr: VD, attr: ED): Unit = {
     _dstId = dstId
     _localDstId = localDstId
     _dstAttr = dstAttr
     _attr = attr
   }
 
-  override def srcId = _srcId
-  override def dstId = _dstId
-  override def srcAttr = _srcAttr
-  override def dstAttr = _dstAttr
-  override def attr = _attr
+  override def srcId: VertexId = _srcId
+  override def dstId: VertexId = _dstId
+  override def srcAttr: VD = _srcAttr
+  override def dstAttr: VD = _dstAttr
+  override def attr: ED = _attr
 
-  override def sendToSrc(msg: A) {
+  override def sendToSrc(msg: A): Unit = {
     send(_localSrcId, msg)
   }
-  override def sendToDst(msg: A) {
+  override def sendToDst(msg: A): Unit = {
     send(_localDstId, msg)
   }
 
-  @inline private def send(localId: Int, msg: A) {
+  @inline private def send(localId: Int, msg: A): Unit = {
     if (bitset.get(localId)) {
       aggregates(localId) = mergeMsg(aggregates(localId), msg)
     } else {

@@ -18,22 +18,23 @@
 package org.apache.spark.mllib.util
 
 import java.io.File
+import java.nio.file.Files
 
 import scala.io.Source
 
-import org.scalatest.FunSuite
-
-import breeze.linalg.{squaredDistance => breezeSquaredDistance}
-import com.google.common.base.Charsets
-import com.google.common.io.Files
-
-import org.apache.spark.mllib.linalg.{DenseVector, SparseVector, Vectors}
+import org.apache.spark.{SparkException, SparkFunSuite, SparkRuntimeException}
+import org.apache.spark.mllib.linalg.{DenseVector, Matrices, SparseVector, Vector, Vectors}
 import org.apache.spark.mllib.regression.LabeledPoint
 import org.apache.spark.mllib.util.MLUtils._
 import org.apache.spark.mllib.util.TestingUtils._
+import org.apache.spark.sql.Row
+import org.apache.spark.sql.functions.col
+import org.apache.spark.sql.types.MetadataBuilder
 import org.apache.spark.util.Utils
 
-class MLUtilsSuite extends FunSuite with MLlibTestSparkContext {
+class MLUtilsSuite extends SparkFunSuite with MLlibTestSparkContext {
+
+  import testImplicits._
 
   test("epsilon computation") {
     assert(1.0 + EPSILON > 1.0, s"EPSILON is too small: $EPSILON.")
@@ -46,6 +47,12 @@ class MLUtilsSuite extends FunSuite with MLlibTestSparkContext {
     val v1 = Vectors.dense(a)
     val norm1 = Vectors.norm(v1, 2.0)
     val precision = 1e-6
+
+    def squaredDistance(v1: Vector, v2: Vector): Double =
+      v1.toArray.zip(v2.toArray).map {
+        case (a, b) => (a - b) * (a - b)
+      }.sum
+
     for (m <- 0 until n) {
       val indices = (0 to m).toArray
       val values = indices.map(i => a(i))
@@ -53,21 +60,21 @@ class MLUtilsSuite extends FunSuite with MLlibTestSparkContext {
       val norm2 = Vectors.norm(v2, 2.0)
       val v3 = Vectors.sparse(n, indices, indices.map(i => a(i) + 0.5))
       val norm3 = Vectors.norm(v3, 2.0)
-      val squaredDist = breezeSquaredDistance(v1.toBreeze, v2.toBreeze)
+      val squaredDist = squaredDistance(v1, v2)
       val fastSquaredDist1 = fastSquaredDistance(v1, norm1, v2, norm2, precision)
       assert((fastSquaredDist1 - squaredDist) <= precision * squaredDist, s"failed with m = $m")
       val fastSquaredDist2 =
         fastSquaredDistance(v1, norm1, Vectors.dense(v2.toArray), norm2, precision)
       assert((fastSquaredDist2 - squaredDist) <= precision * squaredDist, s"failed with m = $m")
-      val squaredDist2 = breezeSquaredDistance(v2.toBreeze, v3.toBreeze)
+      val squaredDist2 = squaredDistance(v2, v3)
       val fastSquaredDist3 =
         fastSquaredDistance(v2, norm2, v3, norm3, precision)
       assert((fastSquaredDist3 - squaredDist2) <= precision * squaredDist2, s"failed with m = $m")
-      if (m > 10) { 
+      if (m > 10) {
         val v4 = Vectors.sparse(n, indices.slice(0, m - 10),
           indices.map(i => a(i) + 0.5).slice(0, m - 10))
         val norm4 = Vectors.norm(v4, 2.0)
-        val squaredDist = breezeSquaredDistance(v2.toBreeze, v4.toBreeze)
+        val squaredDist = squaredDistance(v2, v4)
         val fastSquaredDist =
           fastSquaredDistance(v2, norm2, v4, norm4, precision)
         assert((fastSquaredDist - squaredDist) <= precision * squaredDist, s"failed with m = $m")
@@ -84,7 +91,7 @@ class MLUtilsSuite extends FunSuite with MLlibTestSparkContext {
       """.stripMargin
     val tempDir = Utils.createTempDir()
     val file = new File(tempDir.getPath, "part-00000")
-    Files.write(lines, file, Charsets.US_ASCII)
+    Files.writeString(file.toPath, lines)
     val path = tempDir.toURI.toString
 
     val pointsWithNumFeatures = loadLibSVMFile(sc, path, 6).collect()
@@ -109,6 +116,40 @@ class MLUtilsSuite extends FunSuite with MLlibTestSparkContext {
     Utils.deleteRecursively(tempDir)
   }
 
+  test("loadLibSVMFile throws IllegalArgumentException when indices is zero-based") {
+    val lines =
+      """
+        |0
+        |0 0:4.0 4:5.0 6:6.0
+      """.stripMargin
+    val tempDir = Utils.createTempDir()
+    val file = new File(tempDir.getPath, "part-00000")
+    Files.writeString(file.toPath, lines)
+    val path = tempDir.toURI.toString
+
+    intercept[SparkException] {
+      loadLibSVMFile(sc, path).collect()
+    }
+    Utils.deleteRecursively(tempDir)
+  }
+
+  test("loadLibSVMFile throws IllegalArgumentException when indices is not in ascending order") {
+    val lines =
+      """
+        |0
+        |0 3:4.0 2:5.0 6:6.0
+      """.stripMargin
+    val tempDir = Utils.createTempDir()
+    val file = new File(tempDir.getPath, "part-00000")
+    Files.writeString(file.toPath, lines)
+    val path = tempDir.toURI.toString
+
+    intercept[SparkException] {
+      loadLibSVMFile(sc, path).collect()
+    }
+    Utils.deleteRecursively(tempDir)
+  }
+
   test("saveAsLibSVMFile") {
     val examples = sc.parallelize(Seq(
       LabeledPoint(1.1, Vectors.sparse(3, Seq((0, 1.23), (2, 4.56)))),
@@ -117,13 +158,17 @@ class MLUtilsSuite extends FunSuite with MLlibTestSparkContext {
     val tempDir = Utils.createTempDir()
     val outputDir = new File(tempDir, "output")
     MLUtils.saveAsLibSVMFile(examples, outputDir.toURI.toString)
-    val lines = outputDir.listFiles()
+    val sources = outputDir.listFiles()
       .filter(_.getName.startsWith("part-"))
-      .flatMap(Source.fromFile(_).getLines())
-      .toSet
-    val expected = Set("1.1 1:1.23 3:4.56", "0.0 1:1.01 2:2.02 3:3.03")
-    assert(lines === expected)
-    Utils.deleteRecursively(tempDir)
+      .map(Source.fromFile)
+    Utils.tryWithSafeFinally {
+      val lines = sources.flatMap(_.getLines()).toSet
+      val expected = Set("1.1 1:1.23 3:4.56", "0.0 1:1.01 2:2.02 3:3.03")
+      assert(lines === expected)
+    } {
+      sources.foreach(_.close())
+      Utils.deleteRecursively(tempDir)
+    }
   }
 
   test("appendBias") {
@@ -148,10 +193,10 @@ class MLUtilsSuite extends FunSuite with MLlibTestSparkContext {
     for (folds <- 2 to 10) {
       for (seed <- 1 to 5) {
         val foldedRdds = kFold(data, folds, seed)
-        assert(foldedRdds.size === folds)
-        foldedRdds.map { case (training, validation) =>
+        assert(foldedRdds.length === folds)
+        foldedRdds.foreach { case (training, validation) =>
           val result = validation.union(training).collect().sorted
-          val validationSize = validation.collect().size.toFloat
+          val validationSize = validation.collect().length.toFloat
           assert(validationSize > 0, "empty validation data")
           val p = 1 / folds.toFloat
           // Within 3 standard deviations of the mean
@@ -163,12 +208,12 @@ class MLUtilsSuite extends FunSuite with MLlibTestSparkContext {
             s"Validation data ($validationSize) smaller than expected ($lowerBound)" )
           assert(validationSize < upperBound,
             s"Validation data ($validationSize) larger than expected ($upperBound)" )
-          assert(training.collect().size > 0, "empty training data")
+          assert(training.collect().length > 0, "empty training data")
           assert(result ===  collectedData,
             "Each training+validation set combined should contain all of the data.")
         }
         // K fold cross validation should only have each element in the validation set exactly once
-        assert(foldedRdds.map(_._2).reduce((x,y) => x.union(y)).collect().sorted ===
+        assert(foldedRdds.map(_._2).reduce((x, y) => x.union(y)).collect().sorted ===
           data.collect().sorted)
       }
     }
@@ -210,5 +255,135 @@ class MLUtilsSuite extends FunSuite with MLlibTestSparkContext {
 
     assert(log1pExp(-13.8) ~== math.log1p(math.exp(-13.8)) absTol 1E-10)
     assert(log1pExp(-238423789.865) ~== math.log1p(math.exp(-238423789.865)) absTol 1E-10)
+  }
+
+  test("convertVectorColumnsToML") {
+    val x = Vectors.sparse(2, Array(1), Array(1.0))
+    val metadata = new MetadataBuilder().putLong("numFeatures", 2L).build()
+    val y = Vectors.dense(2.0, 3.0)
+    val z = Vectors.dense(4.0)
+    val p = (5.0, z)
+    val w = Vectors.dense(6.0).asML
+    val df = Seq((0, x, y, p, w)).toDF("id", "x", "y", "p", "w")
+      .withColumn("x", col("x"), metadata)
+    val newDF1 = convertVectorColumnsToML(df)
+    assert(newDF1.schema("x").metadata === metadata, "Metadata should be preserved.")
+    val new1 = newDF1.first()
+    assert(new1 === Row(0, x.asML, y.asML, Row(5.0, z), w))
+    val new2 = convertVectorColumnsToML(df, "x", "y").first()
+    assert(new2 === new1)
+    val new3 = convertVectorColumnsToML(df, "y", "w").first()
+    assert(new3 === Row(0, x, y.asML, Row(5.0, z), w))
+    intercept[IllegalArgumentException] {
+      convertVectorColumnsToML(df, "p")
+    }
+    intercept[IllegalArgumentException] {
+      convertVectorColumnsToML(df, "p._2")
+    }
+  }
+
+  test("convertVectorColumnsFromML") {
+    val x = Vectors.sparse(2, Array(1), Array(1.0)).asML
+    val metadata = new MetadataBuilder().putLong("numFeatures", 2L).build()
+    val y = Vectors.dense(2.0, 3.0).asML
+    val z = Vectors.dense(4.0).asML
+    val p = (5.0, z)
+    val w = Vectors.dense(6.0)
+    val df = Seq((0, x, y, p, w)).toDF("id", "x", "y", "p", "w")
+      .withColumn("x", col("x"), metadata)
+    val newDF1 = convertVectorColumnsFromML(df)
+    assert(newDF1.schema("x").metadata === metadata, "Metadata should be preserved.")
+    val new1 = newDF1.first()
+    assert(new1 === Row(0, Vectors.fromML(x), Vectors.fromML(y), Row(5.0, z), w))
+    val new2 = convertVectorColumnsFromML(df, "x", "y").first()
+    assert(new2 === new1)
+    val new3 = convertVectorColumnsFromML(df, "y", "w").first()
+    assert(new3 === Row(0, x, Vectors.fromML(y), Row(5.0, z), w))
+    intercept[IllegalArgumentException] {
+      convertVectorColumnsFromML(df, "p")
+    }
+    intercept[IllegalArgumentException] {
+      convertVectorColumnsFromML(df, "p._2")
+    }
+  }
+
+  test("convertMatrixColumnsToML") {
+    val x = Matrices.sparse(3, 2, Array(0, 2, 3), Array(0, 2, 1), Array(0.0, -1.2, 0.0))
+    val metadata = new MetadataBuilder().putLong("numFeatures", 2L).build()
+    val y = Matrices.dense(2, 1, Array(0.2, 1.3))
+    val z = Matrices.ones(1, 1)
+    val p = (5.0, z)
+    val w = Matrices.dense(1, 1, Array(4.5)).asML
+    val df = Seq((0, x, y, p, w)).toDF("id", "x", "y", "p", "w")
+      .withColumn("x", col("x"), metadata)
+    val newDF1 = convertMatrixColumnsToML(df)
+    assert(newDF1.schema("x").metadata === metadata, "Metadata should be preserved.")
+    val new1 = newDF1.first()
+    assert(new1 === Row(0, x.asML, y.asML, Row(5.0, z), w))
+    val new2 = convertMatrixColumnsToML(df, "x", "y").first()
+    assert(new2 === new1)
+    val new3 = convertMatrixColumnsToML(df, "y", "w").first()
+    assert(new3 === Row(0, x, y.asML, Row(5.0, z), w))
+    intercept[IllegalArgumentException] {
+      convertMatrixColumnsToML(df, "p")
+    }
+    intercept[IllegalArgumentException] {
+      convertMatrixColumnsToML(df, "p._2")
+    }
+  }
+
+  test("convertMatrixColumnsFromML") {
+    val x = Matrices.sparse(3, 2, Array(0, 2, 3), Array(0, 2, 1), Array(0.0, -1.2, 0.0)).asML
+    val metadata = new MetadataBuilder().putLong("numFeatures", 2L).build()
+    val y = Matrices.dense(2, 1, Array(0.2, 1.3)).asML
+    val z = Matrices.ones(1, 1).asML
+    val p = (5.0, z)
+    val w = Matrices.dense(1, 1, Array(4.5))
+    val df = Seq((0, x, y, p, w)).toDF("id", "x", "y", "p", "w")
+      .withColumn("x", col("x"), metadata)
+    val newDF1 = convertMatrixColumnsFromML(df)
+    assert(newDF1.schema("x").metadata === metadata, "Metadata should be preserved.")
+    val new1 = newDF1.first()
+    assert(new1 === Row(0, Matrices.fromML(x), Matrices.fromML(y), Row(5.0, z), w))
+    val new2 = convertMatrixColumnsFromML(df, "x", "y").first()
+    assert(new2 === new1)
+    val new3 = convertMatrixColumnsFromML(df, "y", "w").first()
+    assert(new3 === Row(0, x, Matrices.fromML(y), Row(5.0, z), w))
+    intercept[IllegalArgumentException] {
+      convertMatrixColumnsFromML(df, "p")
+    }
+    intercept[IllegalArgumentException] {
+      convertMatrixColumnsFromML(df, "p._2")
+    }
+  }
+
+  test("kFold with fold column") {
+    val data = sc.parallelize(1 to 100, 2).map(x => (x, if (x <= 50) 0 else 1)).toDF("i", "fold")
+    val collectedData = data.collect().map(_.getInt(0)).sorted
+    val twoFoldedRdd = kFold(data, 2, "fold")
+    assert(twoFoldedRdd(0)._1.collect().map(_.getInt(0)).sorted ===
+      twoFoldedRdd(1)._2.collect().map(_.getInt(0)).sorted)
+    assert(twoFoldedRdd(0)._2.collect().map(_.getInt(0)).sorted ===
+      twoFoldedRdd(1)._1.collect().map(_.getInt(0)).sorted)
+
+    val result1 = twoFoldedRdd(0)._1.union(twoFoldedRdd(0)._2).collect().map(_.getInt(0)).sorted
+    assert(result1 ===  collectedData,
+      "Each training+validation set combined should contain all of the data.")
+    val result2 = twoFoldedRdd(1)._1.union(twoFoldedRdd(1)._2).collect().map(_.getInt(0)).sorted
+    assert(result2 ===  collectedData,
+      "Each training+validation set combined should contain all of the data.")
+  }
+
+  test("kFold with fold column: invalid fold numbers") {
+    val data = sc.parallelize(Seq(0, 1, 2), 2).toDF( "fold")
+    val err1 = intercept[SparkRuntimeException] {
+      kFold(data, 2, "fold")(0)._1.collect()
+    }
+    assert(err1.getMessage.contains("Fold number must be in range [0, 2), but got 2."))
+
+    val err2 = intercept[SparkException] {
+      kFold(data, 4, "fold")(0)._1.collect()
+    }
+    assert(err2.getMessage.contains("The validation data at fold 3 is empty."))
   }
 }

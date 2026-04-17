@@ -17,25 +17,41 @@
 
 package org.apache.spark.sql.hive.execution
 
-import org.apache.spark.sql.hive.test.TestHive
-import org.apache.spark.sql.hive.test.TestHive._
+import org.apache.spark.sql.AnalysisException
+import org.apache.spark.sql.hive.test.TestHive.{read, sparkContext, sql}
+import org.apache.spark.sql.hive.test.TestHive.sparkSession.implicits._
+import org.apache.spark.tags.SlowHiveTest
 
 case class Nested(a: Int, B: Int)
 case class Data(a: Int, B: Int, n: Nested, nestedArray: Seq[Nested])
 
 /**
- * A set of test cases expressed in Hive QL that are not covered by the tests included in the hive distribution.
+ * A set of test cases expressed in Hive QL that are not covered by the tests
+ * included in the hive distribution.
  */
+@SlowHiveTest
 class HiveResolutionSuite extends HiveComparisonTest {
 
-  case class NestedData(a: Seq[NestedData2], B: NestedData2)
-  case class NestedData2(a: NestedData3, B: NestedData3)
-  case class NestedData3(a: Int, B: Int)
-
   test("SPARK-3698: case insensitive test for nested data") {
-    sparkContext.makeRDD(Seq.empty[NestedData]).registerTempTable("nested")
+    read.json(Seq("""{"a": [{"a": {"a": 1}}]}""").toDS())
+      .createOrReplaceTempView("nested")
     // This should be successfully analyzed
     sql("SELECT a[0].A.A from nested").queryExecution.analyzed
+  }
+
+  test("SPARK-5278: check ambiguous reference to fields") {
+    read.json(Seq("""{"a": [{"b": 1, "B": 2}]}""").toDS())
+      .createOrReplaceTempView("nested")
+
+    // there are 2 filed matching field name "b", we should report Ambiguous reference error
+    checkError(
+      exception = intercept[AnalysisException] {
+        sql("SELECT a[0].b from nested").queryExecution.analyzed
+      },
+      condition = "AMBIGUOUS_REFERENCE_TO_FIELDS",
+      sqlState = "42000",
+      parameters = Map("field" -> "`b`", "count" -> "2")
+    )
   }
 
   createQueryTest("table.attr",
@@ -67,8 +83,8 @@ class HiveResolutionSuite extends HiveComparisonTest {
 
   test("case insensitivity with scala reflection") {
     // Test resolution with Scala Reflection
-    TestHive.sparkContext.parallelize(Data(1, 2, Nested(1,2), Seq(Nested(1,2))) :: Nil)
-      .registerTempTable("caseSensitivityTest")
+    sparkContext.parallelize(Data(1, 2, Nested(1, 2), Seq(Nested(1, 2))) :: Nil)
+      .toDF().createOrReplaceTempView("caseSensitivityTest")
 
     val query = sql("SELECT a, b, A, B, n.a, n.b, n.A, n.B FROM caseSensitivityTest")
     assert(query.schema.fields.map(_.name) === Seq("a", "b", "A", "B", "a", "b", "A", "B"),
@@ -78,21 +94,29 @@ class HiveResolutionSuite extends HiveComparisonTest {
 
   ignore("case insensitivity with scala reflection joins") {
     // Test resolution with Scala Reflection
-    TestHive.sparkContext.parallelize(Data(1, 2, Nested(1,2), Seq(Nested(1,2))) :: Nil)
-      .registerTempTable("caseSensitivityTest")
+    sparkContext.parallelize(Data(1, 2, Nested(1, 2), Seq(Nested(1, 2))) :: Nil)
+      .toDF().createOrReplaceTempView("caseSensitivityTest")
 
     sql("SELECT * FROM casesensitivitytest a JOIN casesensitivitytest b ON a.a = b.a").collect()
   }
 
   test("nested repeated resolution") {
-    TestHive.sparkContext.parallelize(Data(1, 2, Nested(1,2), Seq(Nested(1,2))) :: Nil)
-      .registerTempTable("nestedRepeatedTest")
+    sparkContext.parallelize(Data(1, 2, Nested(1, 2), Seq(Nested(1, 2))) :: Nil)
+      .toDF().createOrReplaceTempView("nestedRepeatedTest")
     assert(sql("SELECT nestedArray[0].a FROM nestedRepeatedTest").collect().head(0) === 1)
   }
 
+  createQueryTest("test ambiguousReferences resolved as hive",
+    """
+      |CREATE TABLE t1(x INT);
+      |CREATE TABLE t2(a STRUCT<x: INT>, k INT);
+      |INSERT OVERWRITE TABLE t1 SELECT 1 FROM src LIMIT 1;
+      |INSERT OVERWRITE TABLE t2 SELECT named_struct("x",1),1 FROM src LIMIT 1;
+      |SELECT a.x FROM t1 a JOIN t2 b ON a.x = b.k;
+    """.stripMargin)
+
   /**
    * Negative examples.  Currently only left here for documentation purposes.
-   * TODO(marmbrus): Test that catalyst fails on these queries.
    */
 
   /* SemanticException [Error 10009]: Line 1:7 Invalid table alias 'src'

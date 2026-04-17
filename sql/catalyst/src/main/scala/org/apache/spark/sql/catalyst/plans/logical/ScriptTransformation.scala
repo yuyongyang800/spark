@@ -17,17 +17,36 @@
 
 package org.apache.spark.sql.catalyst.plans.logical
 
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
+import org.apache.spark.sql.catalyst.expressions.Attribute
+import org.apache.spark.sql.catalyst.plans.ReferenceAllColumns
 
 /**
  * Transforms the input by forking and running the specified script.
  *
- * @param input the set of expression that should be passed to the script.
  * @param script the command that should be executed.
  * @param output the attributes that are produced by the script.
+ * @param ioschema the input and output schema applied in the execution of the script.
  */
 case class ScriptTransformation(
-    input: Seq[Expression],
     script: String,
     output: Seq[Attribute],
-    child: LogicalPlan) extends UnaryNode
+    child: LogicalPlan,
+    ioschema: ScriptInputOutputSchema) extends UnaryNode with ReferenceAllColumns[LogicalPlan] {
+  override protected def withNewChildInternal(newChild: LogicalPlan): ScriptTransformation =
+    copy(child = newChild)
+}
+
+/**
+ * Input and output properties when passing data to a script.
+ * For example, in Hive this would specify which SerDes to use.
+ */
+case class ScriptInputOutputSchema(
+    inputRowFormat: Seq[(String, String)],
+    outputRowFormat: Seq[(String, String)],
+    inputSerdeClass: Option[String],
+    outputSerdeClass: Option[String],
+    inputSerdeProps: Seq[(String, String)],
+    outputSerdeProps: Seq[(String, String)],
+    recordReaderClass: Option[String],
+    recordWriterClass: Option[String],
+    schemaLess: Boolean)

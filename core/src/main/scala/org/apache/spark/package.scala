@@ -17,6 +17,8 @@
 
 package org.apache
 
+import org.apache.spark.util.VersionUtils
+
 /**
  * Core Spark functionality. [[org.apache.spark.SparkContext]] serves as the main entry point to
  * Spark, while [[org.apache.spark.rdd.RDD]] is the data type representing a distributed collection,
@@ -27,8 +29,7 @@ package org.apache
  * contains operations available only on RDDs of Doubles; and
  * [[org.apache.spark.rdd.SequenceFileRDDFunctions]] contains operations available on RDDs that can
  * be saved as SequenceFiles. These operations are automatically available on any RDD of the right
- * type (e.g. RDD[(Int, Int)] through implicit conversions except `saveAsSequenceFile`. You need to
- * `import org.apache.spark.SparkContext._` to make `saveAsSequenceFile` work.
+ * type (e.g. RDD[(Int, Int)] through implicit conversions.
  *
  * Java programmers should reference the [[org.apache.spark.api.java]] package
  * for Spark programming APIs in Java.
@@ -41,8 +42,13 @@ package org.apache
  * Developer API</span> are intended for advanced users want to extend Spark through lower
  * level interfaces. These are subject to changes or removal in minor releases.
  */
-
 package object spark {
-  // For package docs only
-  val SPARK_VERSION = "1.3.0-SNAPSHOT"
+  val SPARK_VERSION: String = SparkBuildInfo.spark_version
+  val SPARK_VERSION_SHORT: String = VersionUtils.shortVersion(SparkBuildInfo.spark_version)
+  val SPARK_BRANCH: String = SparkBuildInfo.spark_branch
+  val SPARK_REVISION: String = SparkBuildInfo.spark_revision
+  val SPARK_BUILD_USER: String = SparkBuildInfo.spark_build_user
+  val SPARK_REPO_URL: String = SparkBuildInfo.spark_repo_url
+  val SPARK_BUILD_DATE: String = SparkBuildInfo.spark_build_date
+  val SPARK_DOC_ROOT: String = SparkBuildInfo.spark_doc_root
 }

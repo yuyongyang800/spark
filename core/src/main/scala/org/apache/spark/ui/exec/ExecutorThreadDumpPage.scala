@@ -17,70 +17,177 @@
 
 package org.apache.spark.ui.exec
 
-import java.net.URLDecoder
-import javax.servlet.http.HttpServletRequest
+import scala.xml.{Node, Text, Unparsed}
 
-import scala.util.Try
-import scala.xml.{Text, Node}
+import jakarta.servlet.http.HttpServletRequest
 
-import org.apache.spark.ui.{UIUtils, WebUIPage}
+import org.apache.spark.SparkContext
+import org.apache.spark.internal.config.UI.UI_FLAMEGRAPH_ENABLED
+import org.apache.spark.status.api.v1.ThreadStackTrace
+import org.apache.spark.ui.{CspNonce, SparkUITab, UIUtils, WebUIPage}
+import org.apache.spark.ui.UIUtils.{formatImportJavaScript, prependBaseUri}
+import org.apache.spark.ui.flamegraph.FlamegraphNode
 
-private[ui] class ExecutorThreadDumpPage(parent: ExecutorsTab) extends WebUIPage("threadDump") {
+private[ui] class ExecutorThreadDumpPage(
+    parent: SparkUITab,
+    sc: Option[SparkContext]) extends WebUIPage("threadDump") {
 
-  private val sc = parent.sc
+  private val flamegraphEnabled = sc.isDefined && sc.get.conf.get(UI_FLAMEGRAPH_ENABLED)
 
   def render(request: HttpServletRequest): Seq[Node] = {
-    val executorId = Option(request.getParameter("executorId")).map {
-      executorId =>
-        // Due to YARN-2844, "<driver>" in the url will be encoded to "%25253Cdriver%25253E" when
-        // running in yarn-cluster mode. `request.getParameter("executorId")` will return
-        // "%253Cdriver%253E". Therefore we need to decode it until we get the real id.
-        var id = executorId
-        var decodedId = URLDecoder.decode(id, "UTF-8")
-        while (id != decodedId) {
-          id = decodedId
-          decodedId = URLDecoder.decode(id, "UTF-8")
-        }
-        id
+    val executorId = Option(request.getParameter("executorId")).map { executorId =>
+      UIUtils.decodeURLParameter(executorId)
     }.getOrElse {
-      return Text(s"Missing executorId parameter")
+      throw new IllegalArgumentException(s"Missing executorId parameter")
     }
     val time = System.currentTimeMillis()
     val maybeThreadDump = sc.get.getExecutorThreadDump(executorId)
 
     val content = maybeThreadDump.map { threadDump =>
       val dumpRows = threadDump.map { thread =>
-        <div class="accordion-group">
-          <div class="accordion-heading" onclick="$(this).next().toggleClass('hidden')">
-            <a class="accordion-toggle">
-              Thread {thread.threadId}: {thread.threadName} ({thread.threadState})
-            </a>
-          </div>
-          <div class="accordion-body hidden">
-            <div class="accordion-inner">
-              <pre>{thread.stackTrace}</pre>
+        val threadId = thread.threadId
+        val blockedBy = thread.blockedByThreadId match {
+          case Some(blockingThreadId) =>
+            <div>
+              Blocked by <a href={s"#${blockingThreadId}_td_id"}>
+              Thread {blockingThreadId} {thread.blockedByLock}</a>
             </div>
-          </div>
-        </div>
+          case None => Text("")
+        }
+        val synchronizers = thread.synchronizers.map(l => s"Lock($l)")
+        val monitors = thread.monitors.map(m => s"Monitor($m)")
+        val heldLocks = (synchronizers ++ monitors).mkString(", ")
+
+        <tr id={s"thread_${threadId}_tr"} class="accordion-heading"
+            data-thread-id={threadId.toString}>
+          <td id={s"${threadId}_td_id"}>{threadId}</td>
+          <td id={s"${threadId}_td_name"}>{thread.threadName}</td>
+          <td id={s"${threadId}_td_state"}>{thread.threadState}</td>
+          <td id={s"${threadId}_td_locking"}>{blockedBy}{heldLocks}</td>
+          <td id={s"${threadId}_td_stacktrace"} class="d-none">{thread.stackTrace.html}</td>
+        </tr>
       }
 
-      <div class="row-fluid">
+    <div class="row">
+      <div class="col-12">
         <p>Updated at {UIUtils.formatDate(time)}</p>
+        {threadDumpSummary(threadDump)}
+        { if (flamegraphEnabled) {
+            drawExecutorFlamegraph(request, threadDump) }
+          else {
+            Seq.empty
+          }
+        }
         {
           // scalastyle:off
-          <p><a class="expandbutton"
-                onClick="$('.accordion-body').removeClass('hidden'); $('.expandbutton').toggleClass('hidden')">
-            Expand All
-          </a></p>
-          <p><a class="expandbutton hidden"
-                onClick="$('.accordion-body').addClass('hidden'); $('.expandbutton').toggleClass('hidden')">
-            Collapse All
-          </a></p>
-          // scalastyle:on
+          <p></p>
+          <span class="collapse-table" data-bs-toggle="collapse"
+                data-bs-target="#thead-stack-trace-table"
+                aria-expanded="true" aria-controls="thead-stack-trace-table"
+                data-collapse-name="collapse-thead-stack-trace-table">
+            <h4>
+              <span class="collapse-table-arrow arrow-open"></span>
+              <a>Thread Stack Trace</a>
+            </h4>
+          </span>
         }
-        <div class="accordion">{dumpRows}</div>
+        <div class="collapsible-table collapse show" id="thead-stack-trace-table">
+          {
+          // scalastyle:off
+          <div class="thead-stack-trace-table-button d-flex align-items-center">
+            <a class="expandbutton" data-action="expandAllThreadStackTrace">Expand All</a>
+            <a class="expandbutton d-none" data-action="collapseAllThreadStackTrace">Collapse All</a>
+            <a class="downloadbutton" href={"data:text/plain;charset=utf-8," + threadDump.map(_.toString).mkString} download={"threaddump_" + executorId + ".txt"}>Download</a>
+            <div class="d-flex">
+              <div class="bs-example" data-example-id="simple-d-flex">
+                <div class="mb-3">
+                  <div class="input-group">
+                    <label class="me-2" for="search">Search:</label>
+                    <input type="text" class="form-control" id="search" data-search-input="true"></input>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          <p></p>
+          }
+          <table class={UIUtils.TABLE_CLASS_STRIPED + " accordion-group" + " sortable"}>
+            <thead>
+              <th data-action="collapseAllThreadStackTrace" data-toggle-button="false">Thread ID</th>
+              <th data-action="collapseAllThreadStackTrace" data-toggle-button="false">Thread Name</th>
+              <th data-action="collapseAllThreadStackTrace" data-toggle-button="false">Thread State</th>
+              <th data-action="collapseAllThreadStackTrace" data-toggle-button="false">
+                {UIUtils.tooltipSpan(<xml:group>Thread Locks</xml:group>,
+                  "Objects whose lock the thread currently holds")}
+              </th>
+            </thead>
+            <tbody>{dumpRows}</tbody>
+          </table>
+        </div>
       </div>
+    </div>
     }.getOrElse(Text("Error fetching thread dump"))
-    UIUtils.headerSparkPage(s"Thread dump for executor $executorId", content, parent)
+    UIUtils.headerSparkPage(request, s"Thread dump for executor $executorId", content, parent)
   }
+
+  private def drawExecutorFlamegraph(request: HttpServletRequest, thread: Array[ThreadStackTrace]): Seq[Node] = {
+    val js =
+      s"""
+         |${formatImportJavaScript(request, "/static/flamegraph.js", "drawFlamegraph", "toggleFlamegraph")}
+         |
+         |drawFlamegraph();
+         |toggleFlamegraph();
+         |""".stripMargin
+    <div>
+      <div>
+        <span id="executor-flamegraph-header" class="cursor-pointer">
+          <h4>
+            <span id="executor-flamegraph-arrow" class="arrow-open"></span>
+            <a>Flame Graph</a>
+          </h4>
+        </span>
+      </div>
+      <div id="executor-flamegraph-data" class="d-none">{FlamegraphNode(thread).toJsonString}</div>
+      <div id="executor-flamegraph-chart">
+        <link rel="stylesheet" type="text/css" href={prependBaseUri(request, "/static/d3-flamegraph.css")}></link>
+        <script src={UIUtils.prependBaseUri(request, "/static/d3.min.js")}></script>
+        <script src={UIUtils.prependBaseUri(request, "/static/d3-flamegraph.min.js")}></script>
+        <script type="module" src={UIUtils.prependBaseUri(request, "/static/flamegraph.js")}></script>
+        <script type="module" nonce={CspNonce.get}>{Unparsed(js)}</script>
+      </div>
+    </div>
+  }
+
+
+  private def threadDumpSummary(threadDump: Array[ThreadStackTrace]): Seq[Node] = {
+    val totalCount = threadDump.length
+    <div>
+      <span class="collapse-table" data-bs-toggle="collapse"
+            data-bs-target="#thread-dump-summary-table"
+            aria-expanded="true" aria-controls="thread-dump-summary-table"
+            data-collapse-name="thead-dump-summary">
+        <h4>
+          <span class="collapse-table-arrow arrow-open"></span>
+          <a>Thread Dump Summary: { totalCount }</a>
+        </h4>
+      </span>
+      <div class="collapsible-table collapse show" id="thread-dump-summary-table">
+      <table class={UIUtils.TABLE_CLASS_STRIPED + " accordion-group" + " sortable"}>
+        <thead><th>Thread State</th><th>Count</th><th>Percentage</th></thead>
+        <tbody>
+          {
+          threadDump.groupBy(_.threadState).map { case (state, threads) =>
+            <tr>
+              <td>{state}</td>
+              <td>{threads.length}</td>
+              <td>{"%.2f%%".format(threads.length * 100.0 / totalCount)}</td>
+            </tr>
+          }.toSeq
+          }
+        </tbody>
+      </table>
+      </div>
+    </div>
+  }
+  // scalastyle:on
 }

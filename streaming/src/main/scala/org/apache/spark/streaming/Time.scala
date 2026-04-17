@@ -63,6 +63,11 @@ case class Time(private val millis: Long) {
     new Time((this.millis / t) * t)
   }
 
+  def floor(that: Duration, zeroTime: Time): Time = {
+    val t = that.milliseconds
+    new Time(((this.millis - zeroTime.milliseconds) / t) * t + zeroTime.milliseconds)
+  }
+
   def isMultipleOf(that: Duration): Boolean =
     (this.millis % that.milliseconds == 0)
 
@@ -84,5 +89,5 @@ case class Time(private val millis: Long) {
 }
 
 object Time {
-  implicit val ordering = Ordering.by((time: Time) => time.millis)
+  implicit val ordering: Ordering[Time] = Ordering.by((time: Time) => time.millis)
 }

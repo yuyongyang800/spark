@@ -18,11 +18,14 @@
 import time
 from datetime import datetime
 import traceback
+import sys
+
+from py4j.java_gateway import is_instance_of
 
 from pyspark import SparkContext, RDD
 
 
-class TransformFunction(object):
+class TransformFunction:
     """
     This class wraps a function RDD[X] -> RDD[Y] that was passed to
     DStream.transform(), allowing it to be called from Java via Py4J's
@@ -31,14 +34,23 @@ class TransformFunction(object):
     Java calls this function with a sequence of JavaRDDs and this function
     returns a single JavaRDD pointer back to Java.
     """
+
     _emptyRDD = None
 
     def __init__(self, ctx, func, *deserializers):
         self.ctx = ctx
         self.func = func
         self.deserializers = deserializers
+        self.rdd_wrap_func = lambda jrdd, ctx, ser: RDD(jrdd, ctx, ser)
+        self.failure = None
+
+    def rdd_wrapper(self, func):
+        self.rdd_wrap_func = func
+        return self
 
     def call(self, milliseconds, jrdds):
+        # Clear the failure
+        self.failure = None
         try:
             if self.ctx is None:
                 self.ctx = SparkContext._active_spark_context
@@ -51,23 +63,35 @@ class TransformFunction(object):
             if len(sers) < len(jrdds):
                 sers += (sers[0],) * (len(jrdds) - len(sers))
 
-            rdds = [RDD(jrdd, self.ctx, ser) if jrdd else None
-                    for jrdd, ser in zip(jrdds, sers)]
+            rdds = [
+                self.rdd_wrap_func(jrdd, self.ctx, ser) if jrdd else None
+                for jrdd, ser in zip(jrdds, sers)
+            ]
             t = datetime.fromtimestamp(milliseconds / 1000.0)
             r = self.func(t, *rdds)
             if r:
-                return r._jrdd
-        except Exception:
-            traceback.print_exc()
+                # Here, we work around to ensure `_jrdd` is `JavaRDD` by wrapping it by `map`.
+                # org.apache.spark.streaming.api.python.PythonTransformFunction requires to return
+                # `JavaRDD`; however, this could be `JavaPairRDD` by some APIs, for example, `zip`.
+                # See SPARK-17756.
+                if is_instance_of(self.ctx._gateway, r._jrdd, "org.apache.spark.api.java.JavaRDD"):
+                    return r._jrdd
+                else:
+                    return r.map(lambda x: x)._jrdd
+        except BaseException:
+            self.failure = traceback.format_exc()
+
+    def getLastFailure(self):
+        return self.failure
 
     def __repr__(self):
         return "TransformFunction(%s)" % self.func
 
     class Java:
-        implements = ['org.apache.spark.streaming.api.python.PythonTransformFunction']
+        implements = ["org.apache.spark.streaming.api.python.PythonTransformFunction"]
 
 
-class TransformFunctionSerializer(object):
+class TransformFunctionSerializer:
     """
     This class implements a serializer for PythonTransformFunction Java
     objects.
@@ -78,37 +102,50 @@ class TransformFunctionSerializer(object):
     it uses this class to invoke Python, which returns the serialized function
     as a byte array.
     """
+
     def __init__(self, ctx, serializer, gateway=None):
         self.ctx = ctx
         self.serializer = serializer
         self.gateway = gateway or self.ctx._gateway
         self.gateway.jvm.PythonDStream.registerSerializer(self)
+        self.failure = None
 
     def dumps(self, id):
+        # Clear the failure
+        self.failure = None
         try:
             func = self.gateway.gateway_property.pool[id]
-            return bytearray(self.serializer.dumps((func.func, func.deserializers)))
-        except Exception:
-            traceback.print_exc()
+            return bytearray(
+                self.serializer.dumps((func.func, func.rdd_wrap_func, func.deserializers))
+            )
+        except BaseException:
+            self.failure = traceback.format_exc()
 
-    def loads(self, bytes):
+    def loads(self, data):
+        # Clear the failure
+        self.failure = None
         try:
-            f, deserializers = self.serializer.loads(str(bytes))
-            return TransformFunction(self.ctx, f, *deserializers)
-        except Exception:
-            traceback.print_exc()
+            f, wrap_func, deserializers = self.serializer.loads(bytes(data))
+            return TransformFunction(self.ctx, f, *deserializers).rdd_wrapper(wrap_func)
+        except BaseException:
+            self.failure = traceback.format_exc()
+
+    def getLastFailure(self):
+        return self.failure
 
     def __repr__(self):
         return "TransformFunctionSerializer(%s)" % self.serializer
 
     class Java:
-        implements = ['org.apache.spark.streaming.api.python.PythonTransformFunctionSerializer']
+        implements = ["org.apache.spark.streaming.api.python.PythonTransformFunctionSerializer"]
 
 
 def rddToFileName(prefix, suffix, timestamp):
     """
     Return string prefix-time(.suffix)
 
+    Examples
+    --------
     >>> rddToFileName("spark", None, 12345678910)
     'spark-12345678910'
     >>> rddToFileName("spark", "tmp", 12345678910)
@@ -116,7 +153,7 @@ def rddToFileName(prefix, suffix, timestamp):
     """
     if isinstance(timestamp, datetime):
         seconds = time.mktime(timestamp.timetuple())
-        timestamp = long(seconds * 1000) + timestamp.microsecond / 1000
+        timestamp = int(seconds * 1000) + timestamp.microsecond // 1000
     if suffix is None:
         return prefix + "-" + str(timestamp)
     else:
@@ -125,4 +162,7 @@ def rddToFileName(prefix, suffix, timestamp):
 
 if __name__ == "__main__":
     import doctest
-    doctest.testmod()
+
+    failure_count, test_count = doctest.testmod()
+    if failure_count:
+        sys.exit(-1)

@@ -17,6 +17,7 @@ declare -a java_args
 declare -a scalac_args
 declare -a sbt_commands
 declare -a maven_profiles
+declare sbt_default_mem=4096
 
 if test -x "$JAVA_HOME/bin/java"; then
     echo -e "Using $JAVA_HOME as default JAVA_HOME."
@@ -38,8 +39,13 @@ dlog () {
 
 acquire_sbt_jar () {
   SBT_VERSION=`awk -F "=" '/sbt\.version/ {print $2}' ./project/build.properties`
-  URL1=http://typesafe.artifactoryonline.com/typesafe/ivy-releases/org.scala-sbt/sbt-launch/${SBT_VERSION}/sbt-launch.jar
-  URL2=http://repo.typesafe.com/typesafe/ivy-releases/org.scala-sbt/sbt-launch/${SBT_VERSION}/sbt-launch.jar
+  # Artifacts are fetched from DEFAULT_ARTIFACT_REPOSITORY if set, then
+  # MAVEN_MIRROR_URL, and finally the default Google mirror of Maven Central.
+  # Ex:
+  #   DEFAULT_ARTIFACT_REPOSITORY=https://artifacts.internal.com/libs-release/
+  local default_repo=${MAVEN_MIRROR_URL:-https://maven-central.storage-download.googleapis.com/maven2/}
+  DEFAULT_ARTIFACT_REPOSITORY=${DEFAULT_ARTIFACT_REPOSITORY:-$default_repo}
+  URL1=${DEFAULT_ARTIFACT_REPOSITORY%/}/org/scala-sbt/sbt-launch/${SBT_VERSION}/sbt-launch-${SBT_VERSION}.jar
   JAR=build/sbt-launch-${SBT_VERSION}.jar
 
   sbt_jar=$JAR
@@ -50,18 +56,20 @@ acquire_sbt_jar () {
     # Download
     printf "Attempting to fetch sbt\n"
     JAR_DL="${JAR}.part"
-    if hash curl 2>/dev/null; then
-      (curl --silent ${URL1} > "${JAR_DL}" || curl --silent ${URL2} > "${JAR_DL}") && mv "${JAR_DL}" "${JAR}"
-    elif hash wget 2>/dev/null; then
-      (wget --quiet ${URL1} -O "${JAR_DL}" || wget --quiet ${URL2} -O "${JAR_DL}") && mv "${JAR_DL}" "${JAR}"
+    if [ $(command -v curl) ]; then
+      curl --fail --location --silent ${URL1} > "${JAR_DL}" &&\
+        mv "${JAR_DL}" "${JAR}"
+    elif [ $(command -v wget) ]; then
+      wget --quiet ${URL1} -O "${JAR_DL}" &&\
+        mv "${JAR_DL}" "${JAR}"
     else
-      printf "You do not have curl or wget installed, please install sbt manually from http://www.scala-sbt.org/\n"
+      printf "You do not have curl or wget installed, please install sbt manually from https://www.scala-sbt.org/\n"
       exit -1
     fi
     fi
     if [ ! -f "${JAR}" ]; then
     # We failed to download
-    printf "Our attempt to download sbt locally to ${JAR} failed. Please install sbt manually from http://www.scala-sbt.org/\n"
+    printf "Our attempt to download sbt locally to ${JAR} failed. Please install sbt manually from https://www.scala-sbt.org/\n"
     exit -1
     fi
     printf "Launching sbt from ${JAR}\n"
@@ -81,7 +89,7 @@ execRunner () {
     echo ""
   }
 
-  exec "$@"
+  "$@"
 }
 
 addJava () {
@@ -110,13 +118,12 @@ addDebugger () {
 # a ham-fisted attempt to move some memory settings in concert
 # so they need not be dicked around with individually.
 get_mem_opts () {
-  local mem=${1:-2048}
-  local perm=$(( $mem / 4 ))
-  (( $perm > 256 )) || perm=256
-  (( $perm < 4096 )) || perm=4096
-  local codecache=$(( $perm / 2 ))
+  local mem=${1:-$sbt_default_mem}
+  local codecache=$(( $mem / 8 ))
+  (( $codecache > 128 )) || codecache=128
+  (( $codecache < 2048 )) || codecache=2048
 
-  echo "-Xms${mem}m -Xmx${mem}m -XX:MaxPermSize=${perm}m -XX:ReservedCodeCacheSize=${codecache}m"
+  echo "-Xms${mem}m -Xmx${mem}m -XX:ReservedCodeCacheSize=${codecache}m"
 }
 
 require_arg () {
@@ -176,10 +183,24 @@ run() {
   set -- "${residual_args[@]}"
   argumentCount=$#
 
+  # If MAVEN_MIRROR_URL is set, generate a repositories config so the SBT launcher
+  # resolves SBT and Scala through the mirror during the boot phase.
+  # Skip if the user already configured -Dsbt.repository.config.
+  if [[ -n "$MAVEN_MIRROR_URL" && ! "$SBT_OPTS" =~ sbt\.repository\.config ]]; then
+    local sbt_repo_config="$(mktemp /tmp/sbt-repositories.XXXXXX)"
+    trap "rm -f '$sbt_repo_config'" EXIT
+    cat > "$sbt_repo_config" <<EOF
+[repositories]
+  local
+  maven-mirror: ${MAVEN_MIRROR_URL}
+EOF
+    addJava "-Dsbt.repository.config=$sbt_repo_config"
+  fi
+
   # run sbt
   execRunner "$java_cmd" \
-    ${SBT_OPTS:-$default_sbt_opts} \
     $(get_mem_opts $sbt_mem) \
+    ${SBT_OPTS:-$default_sbt_opts} \
     ${java_opts} \
     ${java_args[@]} \
     -jar "$sbt_jar" \

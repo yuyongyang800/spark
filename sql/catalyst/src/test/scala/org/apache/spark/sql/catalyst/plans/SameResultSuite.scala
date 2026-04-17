@@ -17,22 +17,26 @@
 
 package org.apache.spark.sql.catalyst.plans
 
-import org.scalatest.FunSuite
-
-import org.apache.spark.sql.catalyst.dsl.plans._
+import org.apache.spark.SparkFunSuite
 import org.apache.spark.sql.catalyst.dsl.expressions._
-import org.apache.spark.sql.catalyst.expressions.{ExprId, AttributeReference}
-import org.apache.spark.sql.catalyst.plans.logical.{LocalRelation, LogicalPlan}
+import org.apache.spark.sql.catalyst.dsl.plans._
+import org.apache.spark.sql.catalyst.optimizer.EliminateResolvedHint
+import org.apache.spark.sql.catalyst.plans.logical._
+import org.apache.spark.sql.catalyst.rules.RuleExecutor
 import org.apache.spark.sql.catalyst.util._
 
 /**
  * Tests for the sameResult function of [[LogicalPlan]].
  */
-class SameResultSuite extends FunSuite {
-  val testRelation = LocalRelation('a.int, 'b.int, 'c.int)
-  val testRelation2 = LocalRelation('a.int, 'b.int, 'c.int)
+class SameResultSuite extends SparkFunSuite {
+  val testRelation = LocalRelation($"a".int, $"b".int, $"c".int)
+  val testRelation2 = LocalRelation($"a".int, $"b".int, $"c".int)
 
-  def assertSameResult(a: LogicalPlan, b: LogicalPlan, result: Boolean = true) = {
+  object Optimize extends RuleExecutor[LogicalPlan] {
+    val batches = Batch("EliminateResolvedHint", Once, EliminateResolvedHint) :: Nil
+  }
+
+  def assertSameResult(a: LogicalPlan, b: LogicalPlan, result: Boolean = true): Unit = {
     val aAnalyzed = a.analyze
     val bAnalyzed = b.analyze
 
@@ -47,20 +51,40 @@ class SameResultSuite extends FunSuite {
   }
 
   test("projections") {
-    assertSameResult(testRelation.select('a), testRelation2.select('a))
-    assertSameResult(testRelation.select('b), testRelation2.select('b))
-    assertSameResult(testRelation.select('a, 'b), testRelation2.select('a, 'b))
-    assertSameResult(testRelation.select('b, 'a), testRelation2.select('b, 'a))
+    assertSameResult(testRelation.select($"a"), testRelation2.select($"a"))
+    assertSameResult(testRelation.select($"b"), testRelation2.select($"b"))
+    assertSameResult(testRelation.select($"a", $"b"), testRelation2.select($"a", $"b"))
+    assertSameResult(testRelation.select($"b", $"a"), testRelation2.select($"b", $"a"))
 
-    assertSameResult(testRelation, testRelation2.select('a), result = false)
-    assertSameResult(testRelation.select('b, 'a), testRelation2.select('a, 'b), result = false)
+    assertSameResult(testRelation, testRelation2.select($"a"), result = false)
+    assertSameResult(testRelation.select($"b", $"a"),
+      testRelation2.select($"a", $"b"), result = false)
   }
 
   test("filters") {
-    assertSameResult(testRelation.where('a === 'b), testRelation2.where('a === 'b))
+    assertSameResult(testRelation.where($"a" === $"b"), testRelation2.where($"a" === $"b"))
   }
 
   test("sorts") {
-    assertSameResult(testRelation.orderBy('a.asc), testRelation2.orderBy('a.asc))
+    assertSameResult(testRelation.orderBy($"a".asc), testRelation2.orderBy($"a".asc))
+  }
+
+  test("union") {
+    assertSameResult(Union(Seq(testRelation, testRelation2)),
+      Union(Seq(testRelation2, testRelation)))
+  }
+
+  test("hint") {
+    val df1 = testRelation.join(ResolvedHint(testRelation))
+    val df2 = testRelation.join(testRelation)
+    assertSameResult(df1, df2)
+  }
+
+  test("join hint") {
+    val df1 = testRelation.join(testRelation.hint("broadcast"))
+    val df2 = testRelation.join(testRelation)
+    val df1Optimized = Optimize.execute(df1.analyze)
+    val df2Optimized = Optimize.execute(df2.analyze)
+    assertSameResult(df1Optimized, df2Optimized)
   }
 }

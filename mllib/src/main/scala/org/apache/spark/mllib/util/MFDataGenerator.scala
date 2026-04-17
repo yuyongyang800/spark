@@ -17,17 +17,17 @@
 
 package org.apache.spark.mllib.util
 
-import scala.language.postfixOps
+import java.{util => ju}
+
 import scala.util.Random
 
-import org.jblas.DoubleMatrix
-
-import org.apache.spark.annotation.DeveloperApi
 import org.apache.spark.SparkContext
+import org.apache.spark.annotation.Since
+import org.apache.spark.mllib.linalg.{BLAS, DenseMatrix}
 import org.apache.spark.rdd.RDD
+import org.apache.spark.util.ArrayImplicits._
 
 /**
- * :: DeveloperApi ::
  * Generate RDD(s) containing data for Matrix Factorization.
  *
  * This method samples training entries according to the oversampling factor
@@ -50,12 +50,15 @@ import org.apache.spark.rdd.RDD
  *   test           (Boolean) Whether to create testing RDD.
  *   testSampFact   (Double) Percentage of training data to use as test data.
  */
-@DeveloperApi
+@Since("0.8.0")
 object MFDataGenerator {
-  def main(args: Array[String]) {
+  @Since("0.8.0")
+  def main(args: Array[String]): Unit = {
     if (args.length < 2) {
+      // scalastyle:off println
       println("Usage: MFDataGenerator " +
         "<master> <outputDir> [m] [n] [rank] [trainSampFact] [noise] [sigma] [test] [testSampFact]")
+      // scalastyle:on println
       System.exit(1)
     }
 
@@ -72,41 +75,40 @@ object MFDataGenerator {
 
     val sc = new SparkContext(sparkMaster, "MFDataGenerator")
 
-    val A = DoubleMatrix.randn(m, rank)
-    val B = DoubleMatrix.randn(rank, n)
-    val z = 1 / scala.math.sqrt(scala.math.sqrt(rank))
-    A.mmuli(z)
-    B.mmuli(z)
-    val fullData = A.mmul(B)
+    val random = new ju.Random(42L)
+
+    val A = DenseMatrix.randn(m, rank, random)
+    val B = DenseMatrix.randn(rank, n, random)
+    val z = 1 / math.sqrt(rank)
+    val fullData = DenseMatrix.zeros(m, n)
+    BLAS.gemm(z, A, B, 1.0, fullData)
 
     val df = rank * (m + n - rank)
-    val sampSize = scala.math.min(scala.math.round(trainSampFact * df),
-      scala.math.round(.99 * m * n)).toInt
+    val sampSize = math.min(math.round(trainSampFact * df), math.round(.99 * m * n)).toInt
     val rand = new Random()
     val mn = m * n
-    val shuffled = rand.shuffle(1 to mn toList)
+    val shuffled = rand.shuffle((0 until mn).toList)
 
     val omega = shuffled.slice(0, sampSize)
     val ordered = omega.sortWith(_ < _).toArray
-    val trainData: RDD[(Int, Int, Double)] = sc.parallelize(ordered)
-      .map(x => (fullData.indexRows(x - 1), fullData.indexColumns(x - 1), fullData.get(x - 1)))
+    val trainData: RDD[(Int, Int, Double)] = sc.parallelize(ordered.toImmutableArraySeq)
+      .map(x => (x % m, x / m, fullData.values(x)))
 
     // optionally add gaussian noise
     if (noise) {
-      trainData.map(x => (x._1, x._2, x._3 + rand.nextGaussian * sigma))
+      trainData.map(x => (x._1, x._2, x._3 + rand.nextGaussian() * sigma))
     }
 
-    trainData.map(x => x._1 + "," + x._2 + "," + x._3).saveAsTextFile(outputPath)
+    trainData.map(x => s"${x._1},${x._2},${x._3}").saveAsTextFile(outputPath)
 
     // optionally generate testing data
     if (test) {
-      val testSampSize = scala.math
-        .min(scala.math.round(sampSize * testSampFact),scala.math.round(mn - sampSize)).toInt
+      val testSampSize = math.min(math.round(sampSize * testSampFact).toInt, mn - sampSize)
       val testOmega = shuffled.slice(sampSize, sampSize + testSampSize)
       val testOrdered = testOmega.sortWith(_ < _).toArray
-      val testData: RDD[(Int, Int, Double)] = sc.parallelize(testOrdered)
-        .map(x => (fullData.indexRows(x - 1), fullData.indexColumns(x - 1), fullData.get(x - 1)))
-      testData.map(x => x._1 + "," + x._2 + "," + x._3).saveAsTextFile(outputPath)
+      val testData: RDD[(Int, Int, Double)] = sc.parallelize(testOrdered.toImmutableArraySeq)
+        .map(x => (x % m, x / m, fullData.values(x)))
+      testData.map(x => s"${x._1},${x._2},${x._3}").saveAsTextFile(outputPath)
     }
 
     sc.stop()

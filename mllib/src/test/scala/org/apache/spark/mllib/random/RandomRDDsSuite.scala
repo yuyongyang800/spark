@@ -19,34 +19,31 @@ package org.apache.spark.mllib.random
 
 import scala.collection.mutable.ArrayBuffer
 
-import org.scalatest.FunSuite
-
-import org.apache.spark.SparkContext._
+import org.apache.spark.SparkFunSuite
 import org.apache.spark.mllib.linalg.Vector
-import org.apache.spark.mllib.rdd.{RandomRDDPartition, RandomRDD}
+import org.apache.spark.mllib.rdd.{RandomRDD, RandomRDDPartition}
 import org.apache.spark.mllib.util.MLlibTestSparkContext
+import org.apache.spark.mllib.util.TestingUtils._
 import org.apache.spark.rdd.RDD
 import org.apache.spark.util.StatCounter
 
 /*
  * Note: avoid including APIs that do not set the seed for the RNG in unit tests
  * in order to guarantee deterministic behavior.
- *
- * TODO update tests to use TestingUtils for floating point comparison after PR 1367 is merged
  */
-class RandomRDDsSuite extends FunSuite with MLlibTestSparkContext with Serializable {
+class RandomRDDsSuite extends SparkFunSuite with MLlibTestSparkContext with Serializable {
 
   def testGeneratedRDD(rdd: RDD[Double],
       expectedSize: Long,
       expectedNumPartitions: Int,
       expectedMean: Double,
       expectedStddev: Double,
-      epsilon: Double = 0.01) {
+      epsilon: Double = 0.01): Unit = {
     val stats = rdd.stats()
     assert(expectedSize === stats.count)
-    assert(expectedNumPartitions === rdd.partitions.size)
-    assert(math.abs(stats.mean - expectedMean) < epsilon)
-    assert(math.abs(stats.stdev - expectedStddev) < epsilon)
+    assert(expectedNumPartitions === rdd.partitions.length)
+    assert(stats.mean ~== expectedMean absTol epsilon)
+    assert(stats.stdev ~== expectedStddev absTol epsilon)
   }
 
   // assume test RDDs are small
@@ -56,17 +53,17 @@ class RandomRDDsSuite extends FunSuite with MLlibTestSparkContext with Serializa
       expectedNumPartitions: Int,
       expectedMean: Double,
       expectedStddev: Double,
-      epsilon: Double = 0.01) {
-    assert(expectedNumPartitions === rdd.partitions.size)
+      epsilon: Double = 0.01): Unit = {
+    assert(expectedNumPartitions === rdd.partitions.length)
     val values = new ArrayBuffer[Double]()
-    rdd.collect.foreach { vector => {
+    rdd.collect().foreach { vector => {
       assert(vector.size === expectedColumns)
       values ++= vector.toArray
     }}
     assert(expectedRows === values.size / expectedColumns)
     val stats = new StatCounter(values)
-    assert(math.abs(stats.mean - expectedMean) < epsilon)
-    assert(math.abs(stats.stdev - expectedStddev) < epsilon)
+    assert(stats.mean ~== expectedMean absTol epsilon)
+    assert(stats.stdev ~== expectedStddev absTol epsilon)
   }
 
   test("RandomRDD sizes") {
@@ -75,7 +72,7 @@ class RandomRDDsSuite extends FunSuite with MLlibTestSparkContext with Serializa
     for ((size, numPartitions) <- List((10000, 6), (12345, 1), (1000, 101))) {
       val rdd = new RandomRDD(sc, size, numPartitions, new UniformGenerator, 0L)
       assert(rdd.count() === size)
-      assert(rdd.partitions.size === numPartitions)
+      assert(rdd.partitions.length === numPartitions)
 
       // check that partition sizes are balanced
       val partSizes = rdd.partitions.map(p =>
@@ -89,7 +86,7 @@ class RandomRDDsSuite extends FunSuite with MLlibTestSparkContext with Serializa
     val size = Int.MaxValue.toLong * 100L
     val numPartitions = 101
     val rdd = new RandomRDD(sc, size, numPartitions, new UniformGenerator, 0L)
-    assert(rdd.partitions.size === numPartitions)
+    assert(rdd.partitions.length === numPartitions)
     val count = rdd.partitions.foldLeft(0L) { (count, part) =>
       count + part.asInstanceOf[RandomRDDPartition[Double]].size
     }
@@ -147,7 +144,7 @@ class RandomRDDsSuite extends FunSuite with MLlibTestSparkContext with Serializa
 
     // mock distribution to check that partitions have unique seeds
     val random = RandomRDDs.randomRDD(sc, new MockDistro(), 1000L, 1000, 0L)
-    assert(random.collect.size === random.collect.distinct.size)
+    assert(random.collect().length === random.collect().distinct.length)
   }
 
   test("randomVectorRDD for different distributions") {
@@ -181,7 +178,8 @@ class RandomRDDsSuite extends FunSuite with MLlibTestSparkContext with Serializa
       val poisson = RandomRDDs.poissonVectorRDD(sc, poissonMean, rows, cols, parts, seed)
       testGeneratedVectorRDD(poisson, rows, cols, parts, poissonMean, math.sqrt(poissonMean), 0.1)
 
-      val exponential = RandomRDDs.exponentialVectorRDD(sc, exponentialMean, rows, cols, parts, seed)
+      val exponential =
+        RandomRDDs.exponentialVectorRDD(sc, exponentialMean, rows, cols, parts, seed)
       testGeneratedVectorRDD(exponential, rows, cols, parts, exponentialMean, exponentialMean, 0.1)
 
       val gamma = RandomRDDs.gammaVectorRDD(sc, gammaShape, gammaScale, rows, cols, parts, seed)
@@ -197,7 +195,7 @@ private[random] class MockDistro extends RandomDataGenerator[Double] {
   // This allows us to check that each partition has a different seed
   override def nextValue(): Double = seed.toDouble
 
-  override def setSeed(seed: Long) = this.seed = seed
+  override def setSeed(seed: Long): Unit = this.seed = seed
 
   override def copy(): MockDistro = new MockDistro
 }

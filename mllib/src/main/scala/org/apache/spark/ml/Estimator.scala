@@ -18,30 +18,32 @@
 package org.apache.spark.ml
 
 import scala.annotation.varargs
-import scala.collection.JavaConverters._
+import scala.collection.mutable.ArrayBuffer
 
-import org.apache.spark.annotation.AlphaComponent
-import org.apache.spark.ml.param.{ParamMap, ParamPair, Params}
-import org.apache.spark.sql.SchemaRDD
-import org.apache.spark.sql.api.java.JavaSchemaRDD
+import org.apache.spark.annotation.Since
+import org.apache.spark.ml.param.{ParamMap, ParamPair}
+import org.apache.spark.sql.Dataset
 
 /**
- * :: AlphaComponent ::
  * Abstract class for estimators that fit models to data.
  */
-@AlphaComponent
-abstract class Estimator[M <: Model[M]] extends PipelineStage with Params {
+abstract class Estimator[M <: Model[M]] extends PipelineStage {
 
   /**
    * Fits a single model to the input data with optional parameters.
    *
    * @param dataset input dataset
-   * @param paramPairs optional list of param pairs (overwrite embedded params)
+   * @param firstParamPair the first param pair, overrides embedded params
+   * @param otherParamPairs other param pairs.  These values override any specified in this
+   *                        Estimator's embedded ParamMap.
    * @return fitted model
    */
+  @Since("2.0.0")
   @varargs
-  def fit(dataset: SchemaRDD, paramPairs: ParamPair[_]*): M = {
-    val map = new ParamMap().put(paramPairs: _*)
+  def fit(dataset: Dataset[_], firstParamPair: ParamPair[_], otherParamPairs: ParamPair[_]*): M = {
+    val map = new ParamMap()
+      .put(firstParamPair)
+      .put(otherParamPairs: _*)
     fit(dataset, map)
   }
 
@@ -49,57 +51,65 @@ abstract class Estimator[M <: Model[M]] extends PipelineStage with Params {
    * Fits a single model to the input data with provided parameter map.
    *
    * @param dataset input dataset
-   * @param paramMap parameter map
+   * @param paramMap Parameter map.
+   *                 These values override any specified in this Estimator's embedded ParamMap.
    * @return fitted model
    */
-  def fit(dataset: SchemaRDD, paramMap: ParamMap): M
+  @Since("2.0.0")
+  def fit(dataset: Dataset[_], paramMap: ParamMap): M = {
+    copy(paramMap).fit(dataset)
+  }
+
+  /**
+   * Fits a model to the input data.
+   */
+  @Since("2.0.0")
+  def fit(dataset: Dataset[_]): M
 
   /**
    * Fits multiple models to the input data with multiple sets of parameters.
    * The default implementation uses a for loop on each parameter map.
-   * Subclasses could overwrite this to optimize multi-model training.
+   * Subclasses could override this to optimize multi-model training.
    *
    * @param dataset input dataset
-   * @param paramMaps an array of parameter maps
+   * @param paramMaps An array of parameter maps.
+   *                  These values override any specified in this Estimator's embedded ParamMap.
    * @return fitted models, matching the input parameter maps
    */
-  def fit(dataset: SchemaRDD, paramMaps: Array[ParamMap]): Seq[M] = {
+  @Since("2.0.0")
+  def fit(dataset: Dataset[_], paramMaps: Seq[ParamMap]): Seq[M] = {
     paramMaps.map(fit(dataset, _))
   }
 
-  // Java-friendly versions of fit.
+  override def copy(extra: ParamMap): Estimator[M]
 
   /**
-   * Fits a single model to the input data with optional parameters.
-   *
-   * @param dataset input dataset
-   * @param paramPairs optional list of param pairs (overwrite embedded params)
-   * @return fitted model
+   * For ml connect only.
+   * Estimate an upper-bound size of the model to be fitted in bytes, based on the
+   * parameters and the dataset, e.g., using $(k) and numFeatures to estimate a
+   * k-means model size.
+   * 1, Both driver side memory usage and distributed objects size (like DataFrame,
+   * RDD, Graph, Summary) are counted.
+   * 2, Lazy vals are not counted, e.g., an auxiliary object used in prediction.
+   * 3, If there is no enough information to get an accurate size, try to estimate the
+   * upper-bound size, e.g.
+   *    - Given a LogisticRegression estimator, assume the coefficients are dense, even
+   *      though the actual fitted model might be sparse (by L1 penalty).
+   *    - Given a tree model, assume all underlying trees are complete binary trees, even
+   *      though some branches might be pruned or truncated.
+   * 4, For some model such as tree model, estimating model size before training is hard,
+   *    the `estimateModelSize` method is not supported.
    */
-  @varargs
-  def fit(dataset: JavaSchemaRDD, paramPairs: ParamPair[_]*): M = {
-    fit(dataset.schemaRDD, paramPairs: _*)
+  private[spark] def estimateModelSize(dataset: Dataset[_]): Long = {
+    throw new UnsupportedOperationException
   }
+}
 
-  /**
-   * Fits a single model to the  input data with provided parameter map.
-   *
-   * @param dataset input dataset
-   * @param paramMap parameter map
-   * @return fitted model
-   */
-  def fit(dataset: JavaSchemaRDD, paramMap: ParamMap): M = {
-    fit(dataset.schemaRDD, paramMap)
-  }
 
-  /**
-   * Fits multiple models to the input data with multiple sets of parameters.
-   *
-   * @param dataset input dataset
-   * @param paramMaps an array of parameter maps
-   * @return fitted models, matching the input parameter maps
-   */
-  def fit(dataset: JavaSchemaRDD, paramMaps: Array[ParamMap]): java.util.List[M] = {
-    fit(dataset.schemaRDD, paramMaps).asJava
+private[spark] object EstimatorUtils {
+  // This warningMessagesBuffer is for collecting warning messages during `estimator.fit`
+  // execution in Spark Connect server.
+  private[spark] val warningMessagesBuffer = new java.lang.ThreadLocal[ArrayBuffer[String]]() {
+    override def initialValue: ArrayBuffer[String] = null
   }
 }

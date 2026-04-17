@@ -27,13 +27,17 @@ object SparkFiles {
   /**
    * Get the absolute path of a file added through `SparkContext.addFile()`.
    */
-  def get(filename: String): String =
-    new File(getRootDirectory(), filename).getAbsolutePath()
+  def get(filename: String): String = {
+    val jobArtifactUUID = JobArtifactSet
+      .getCurrentJobArtifactState.map(_.uuid).getOrElse("default")
+    val withUuid = if (jobArtifactUUID == "default") filename else s"$jobArtifactUUID/$filename"
+    new File(getRootDirectory(), withUuid).getAbsolutePath
+  }
 
   /**
    * Get the root directory that contains files added through `SparkContext.addFile()`.
    */
   def getRootDirectory(): String =
-    SparkEnv.get.sparkFilesDir
+    SparkEnv.get.driverTmpDir.getOrElse(".")
 
 }

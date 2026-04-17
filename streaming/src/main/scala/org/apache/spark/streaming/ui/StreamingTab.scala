@@ -17,31 +17,32 @@
 
 package org.apache.spark.streaming.ui
 
-import org.apache.spark.{Logging, SparkException}
+import org.apache.spark.internal.Logging
 import org.apache.spark.streaming.StreamingContext
 import org.apache.spark.ui.{SparkUI, SparkUITab}
-
-import StreamingTab._
 
 /**
  * Spark Web UI tab that shows statistics of a streaming job.
  * This assumes the given SparkContext has enabled its SparkUI.
  */
-private[spark] class StreamingTab(ssc: StreamingContext)
-  extends SparkUITab(getSparkUI(ssc), "streaming") with Logging {
+private[spark] class StreamingTab(val ssc: StreamingContext, sparkUI: SparkUI)
+  extends SparkUITab(sparkUI, "streaming") with Logging {
 
-  val parent = getSparkUI(ssc)
+  private val STATIC_RESOURCE_DIR = "org/apache/spark/ui/static"
+
+  val parent = sparkUI
   val listener = ssc.progressListener
 
-  ssc.addStreamingListener(listener)
   attachPage(new StreamingPage(this))
-  parent.attachTab(this)
-}
+  attachPage(new BatchPage(this))
 
-private object StreamingTab {
-  def getSparkUI(ssc: StreamingContext): SparkUI = {
-    ssc.sc.ui.getOrElse {
-      throw new SparkException("Parent SparkUI to attach this tab to not found!")
-    }
+  def attach(): Unit = {
+    parent.attachTab(this)
+    parent.addStaticHandler(STATIC_RESOURCE_DIR, "/static/streaming")
+  }
+
+  def detach(): Unit = {
+    parent.detachTab(this)
+    parent.detachHandler("/static/streaming")
   }
 }

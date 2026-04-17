@@ -26,13 +26,13 @@ import org.apache.spark.util.Utils
 
 private[spark] class ZippedPartitionsPartition(
     idx: Int,
-    @transient rdds: Seq[RDD[_]],
+    @transient private val rdds: Seq[RDD[_]],
     @transient val preferredLocations: Seq[String])
   extends Partition {
 
   override val index: Int = idx
   var partitionValues = rdds.map(rdd => rdd.partitions(idx))
-  def partitions = partitionValues
+  def partitions: Seq[Partition] = partitionValues
 
   @throws(classOf[IOException])
   private def writeObject(oos: ObjectOutputStream): Unit = Utils.tryOrIOException {
@@ -52,9 +52,10 @@ private[spark] abstract class ZippedPartitionsBaseRDD[V: ClassTag](
     if (preservesPartitioning) firstParent[Any].partitioner else None
 
   override def getPartitions: Array[Partition] = {
-    val numParts = rdds.head.partitions.size
-    if (!rdds.forall(rdd => rdd.partitions.size == numParts)) {
-      throw new IllegalArgumentException("Can't zip RDDs with unequal numbers of partitions")
+    val numParts = rdds.head.partitions.length
+    if (!rdds.forall(rdd => rdd.partitions.length == numParts)) {
+      throw new IllegalArgumentException(
+        s"Can't zip RDDs with unequal numbers of partitions: ${rdds.map(_.partitions.length)}")
     }
     Array.tabulate[Partition](numParts) { i =>
       val prefs = rdds.map(rdd => rdd.preferredLocations(rdd.partitions(i)))
@@ -69,7 +70,7 @@ private[spark] abstract class ZippedPartitionsBaseRDD[V: ClassTag](
     s.asInstanceOf[ZippedPartitionsPartition].preferredLocations
   }
 
-  override def clearDependencies() {
+  override def clearDependencies(): Unit = {
     super.clearDependencies()
     rdds = null
   }
@@ -88,7 +89,7 @@ private[spark] class ZippedPartitionsRDD2[A: ClassTag, B: ClassTag, V: ClassTag]
     f(rdd1.iterator(partitions(0), context), rdd2.iterator(partitions(1), context))
   }
 
-  override def clearDependencies() {
+  override def clearDependencies(): Unit = {
     super.clearDependencies()
     rdd1 = null
     rdd2 = null
@@ -113,7 +114,7 @@ private[spark] class ZippedPartitionsRDD3
       rdd3.iterator(partitions(2), context))
   }
 
-  override def clearDependencies() {
+  override def clearDependencies(): Unit = {
     super.clearDependencies()
     rdd1 = null
     rdd2 = null
@@ -123,7 +124,7 @@ private[spark] class ZippedPartitionsRDD3
 }
 
 private[spark] class ZippedPartitionsRDD4
-  [A: ClassTag, B: ClassTag, C: ClassTag, D:ClassTag, V: ClassTag](
+  [A: ClassTag, B: ClassTag, C: ClassTag, D: ClassTag, V: ClassTag](
     sc: SparkContext,
     var f: (Iterator[A], Iterator[B], Iterator[C], Iterator[D]) => Iterator[V],
     var rdd1: RDD[A],
@@ -141,7 +142,7 @@ private[spark] class ZippedPartitionsRDD4
       rdd4.iterator(partitions(3), context))
   }
 
-  override def clearDependencies() {
+  override def clearDependencies(): Unit = {
     super.clearDependencies()
     rdd1 = null
     rdd2 = null

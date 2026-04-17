@@ -15,15 +15,16 @@
  * limitations under the License.
  */
 
+// scalastyle:off println
 package org.apache.spark.examples.mllib
 
 import scala.collection.mutable
 
-import org.apache.log4j.{Level, Logger}
+import org.apache.logging.log4j.Level
+import org.apache.logging.log4j.core.config.Configurator
 import scopt.OptionParser
 
 import org.apache.spark.{SparkConf, SparkContext}
-import org.apache.spark.SparkContext._
 import org.apache.spark.mllib.recommendation.{ALS, MatrixFactorizationModel, Rating}
 import org.apache.spark.rdd.RDD
 
@@ -48,13 +49,13 @@ object MovieLensALS {
       numProductBlocks: Int = -1,
       implicitPrefs: Boolean = false) extends AbstractParams[Params]
 
-  def main(args: Array[String]) {
+  def main(args: Array[String]): Unit = {
     val defaultParams = Params()
 
     val parser = new OptionParser[Params]("MovieLensALS") {
       head("MovieLensALS: an example app for ALS on MovieLens data.")
       opt[Int]("rank")
-        .text(s"rank, default: ${defaultParams.rank}}")
+        .text(s"rank, default: ${defaultParams.rank}")
         .action((x, c) => c.copy(rank = x))
       opt[Int]("numIterations")
         .text(s"number of iterations, default: ${defaultParams.numIterations}")
@@ -89,22 +90,21 @@ object MovieLensALS {
         """.stripMargin)
     }
 
-    parser.parse(args, defaultParams).map { params =>
-      run(params)
-    } getOrElse {
-      System.exit(1)
+    parser.parse(args, defaultParams) match {
+      case Some(params) => run(params)
+      case _ => sys.exit(1)
     }
   }
 
-  def run(params: Params) {
+  def run(params: Params): Unit = {
     val conf = new SparkConf().setAppName(s"MovieLensALS with $params")
     if (params.kryo) {
       conf.registerKryoClasses(Array(classOf[mutable.BitSet], classOf[Rating]))
-        .set("spark.kryoserializer.buffer.mb", "8")
+        .set("spark.kryoserializer.buffer", "8m")
     }
     val sc = new SparkContext(conf)
 
-    Logger.getRootLogger.setLevel(Level.WARN)
+    Configurator.setRootLevel(Level.WARN)
 
     val implicitPrefs = params.implicitPrefs
 
@@ -156,7 +156,7 @@ object MovieLensALS {
     val numTest = test.count()
     println(s"Training: $numTraining, test: $numTest.")
 
-    ratings.unpersist(blocking = false)
+    ratings.unpersist()
 
     val model = new ALS()
       .setRank(params.rank)
@@ -175,9 +175,12 @@ object MovieLensALS {
   }
 
   /** Compute RMSE (Root Mean Squared Error). */
-  def computeRmse(model: MatrixFactorizationModel, data: RDD[Rating], implicitPrefs: Boolean) = {
+  def computeRmse(model: MatrixFactorizationModel, data: RDD[Rating], implicitPrefs: Boolean)
+    : Double = {
 
-    def mapPredictedRating(r: Double) = if (implicitPrefs) math.max(math.min(r, 1.0), 0.0) else r
+    def mapPredictedRating(r: Double): Double = {
+      if (implicitPrefs) math.max(math.min(r, 1.0), 0.0) else r
+    }
 
     val predictions: RDD[Rating] = model.predict(data.map(x => (x.user, x.product)))
     val predictionsAndRatings = predictions.map{ x =>
@@ -186,3 +189,4 @@ object MovieLensALS {
     math.sqrt(predictionsAndRatings.map(x => (x._1 - x._2) * (x._1 - x._2)).mean())
   }
 }
+// scalastyle:on println

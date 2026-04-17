@@ -17,12 +17,15 @@
 
 package org.apache.spark.deploy
 
-import org.scalatest.FunSuite
-import org.scalatest.Matchers
+import org.scalatest.matchers.must.Matchers
+import org.scalatest.matchers.should.Matchers._
 
-class ClientSuite extends FunSuite with Matchers {
+import org.apache.spark.SparkFunSuite
+
+class ClientSuite extends SparkFunSuite with Matchers {
   test("correctly validates driver jar URL's") {
     ClientArguments.isValidJarUrl("http://someHost:8080/foo.jar") should be (true)
+    ClientArguments.isValidJarUrl("https://someHost:8080/foo.jar") should be (true)
 
     // file scheme with authority and path is valid.
     ClientArguments.isValidJarUrl("file://somehost/path/to/a/jarFile.jar") should be (true)
@@ -45,5 +48,4 @@ class ClientSuite extends FunSuite with Matchers {
     // Invalid syntax.
     ClientArguments.isValidJarUrl("hdfs:") should be (false)
   }
-
 }

@@ -17,26 +17,42 @@
 
 package org.apache.spark.sql.catalyst.expressions
 
-import org.apache.spark.sql.catalyst.analysis.Star
+import scala.collection.mutable
+
 
 protected class AttributeEquals(val a: Attribute) {
-  override def hashCode() = a.exprId.hashCode()
-  override def equals(other: Any) = (a, other.asInstanceOf[AttributeEquals].a) match {
+  override def hashCode(): Int = a match {
+    case ar: AttributeReference => ar.exprId.hashCode()
+    case a => a.hashCode()
+  }
+
+  override def equals(other: Any): Boolean = (a, other.asInstanceOf[AttributeEquals].a) match {
     case (a1: AttributeReference, a2: AttributeReference) => a1.exprId == a2.exprId
     case (a1, a2) => a1 == a2
   }
 }
 
 object AttributeSet {
-  def apply(a: Attribute) =
-    new AttributeSet(Set(new AttributeEquals(a)))
+  /** Returns an empty [[AttributeSet]]. */
+  val empty = apply(Iterable.empty)
+
+  /** Constructs a new [[AttributeSet]] that contains a single [[Attribute]]. */
+  def apply(a: Attribute): AttributeSet = {
+    val baseSet = new mutable.LinkedHashSet[AttributeEquals]
+    baseSet += new AttributeEquals(a)
+    new AttributeSet(baseSet)
+  }
 
   /** Constructs a new [[AttributeSet]] given a sequence of [[Expression Expressions]]. */
-  def apply(baseSet: Seq[Expression]) =
-    new AttributeSet(
-      baseSet
-        .flatMap(_.references)
-        .map(new AttributeEquals(_)).toSet)
+  def apply(baseSet: Iterable[Expression]): AttributeSet = {
+    fromAttributeSets(baseSet.map(_.references))
+  }
+
+  /** Constructs a new [[AttributeSet]] given a sequence of [[AttributeSet]]s. */
+  def fromAttributeSets(sets: Iterable[AttributeSet]): AttributeSet = {
+    val baseSet = sets.foldLeft(new mutable.LinkedHashSet[AttributeEquals]())( _ ++= _.baseSet)
+    new AttributeSet(baseSet)
+  }
 }
 
 /**
@@ -46,16 +62,19 @@ object AttributeSet {
  * cosmetically (e.g., the names have different capitalizations).
  *
  * Note that we do not override equality for Attribute references as it is really weird when
- * `AttributeReference("a"...) == AttrributeReference("b", ...)`. This tactic leads to broken tests,
+ * `AttributeReference("a"...) == AttributeReference("b", ...)`. This tactic leads to broken tests,
  * and also makes doing transformations hard (we always try keep older trees instead of new ones
  * when the transformation was a no-op).
  */
-class AttributeSet private (val baseSet: Set[AttributeEquals])
-  extends Traversable[Attribute] with Serializable {
+class AttributeSet private (private val baseSet: mutable.LinkedHashSet[AttributeEquals])
+  extends Iterable[Attribute] with Serializable {
+
+  override def hashCode: Int = baseSet.hashCode()
 
   /** Returns true if the members of this AttributeSet and other are the same. */
-  override def equals(other: Any) = other match {
-    case otherSet: AttributeSet => baseSet.map(_.a).forall(otherSet.contains)
+  override def equals(other: Any): Boolean = other match {
+    case otherSet: AttributeSet =>
+      otherSet.size == baseSet.size && baseSet.map(_.a).forall(otherSet.contains)
     case _ => false
   }
 
@@ -65,11 +84,11 @@ class AttributeSet private (val baseSet: Set[AttributeEquals])
 
   /** Returns a new [[AttributeSet]] that contains `elem` in addition to the current elements. */
   def +(elem: Attribute): AttributeSet =  // scalastyle:ignore
-    new AttributeSet(baseSet + new AttributeEquals(elem))
+    new AttributeSet(baseSet.union(Set(new AttributeEquals(elem))))
 
   /** Returns a new [[AttributeSet]] that does not contain `elem`. */
   def -(elem: Attribute): AttributeSet =
-    new AttributeSet(baseSet - new AttributeEquals(elem))
+    new AttributeSet(baseSet.diff(Set(new AttributeEquals(elem))))
 
   /** Returns an iterator containing all of the attributes in the set. */
   def iterator: Iterator[Attribute] = baseSet.map(_.a).iterator
@@ -78,40 +97,61 @@ class AttributeSet private (val baseSet: Set[AttributeEquals])
    * Returns true if the [[Attribute Attributes]] in this set are a subset of the Attributes in
    * `other`.
    */
-  def subsetOf(other: AttributeSet) = baseSet.subsetOf(other.baseSet)
+  def subsetOf(other: AttributeSet): Boolean = baseSet.subsetOf(other.baseSet)
 
   /**
    * Returns a new [[AttributeSet]] that does not contain any of the [[Attribute Attributes]] found
    * in `other`.
    */
-  def --(other: Traversable[NamedExpression]) =
-    new AttributeSet(baseSet -- other.map(a => new AttributeEquals(a.toAttribute)))
+  def --(other: Iterable[NamedExpression]): AttributeSet = {
+    if (isEmpty) {
+      AttributeSet.empty
+    } else if (other.isEmpty) {
+      this
+    } else {
+      other match {
+        // SPARK-32755: `--` method behave differently under scala 2.12 and 2.13,
+        // use a Scala 2.12 based code to maintains the insertion order in Scala 2.13
+        case otherSet: AttributeSet =>
+          new AttributeSet(baseSet.clone() --= otherSet.baseSet)
+        case _ =>
+          new AttributeSet(baseSet.clone() --= other.map(a => new AttributeEquals(a.toAttribute)))
+      }
+    }
+  }
 
   /**
    * Returns a new [[AttributeSet]] that contains all of the [[Attribute Attributes]] found
    * in `other`.
    */
-  def ++(other: AttributeSet) = new AttributeSet(baseSet ++ other.baseSet)
+  def ++(other: AttributeSet): AttributeSet = new AttributeSet(baseSet ++ other.baseSet)
 
   /**
    * Returns a new [[AttributeSet]] contain only the [[Attribute Attributes]] where `f` evaluates to
    * true.
    */
-  override def filter(f: Attribute => Boolean) = new AttributeSet(baseSet.filter(ae => f(ae.a)))
+  override def filter(f: Attribute => Boolean): AttributeSet =
+    new AttributeSet(baseSet.filter(ae => f(ae.a)))
 
   /**
    * Returns a new [[AttributeSet]] that only contains [[Attribute Attributes]] that are found in
    * `this` and `other`.
    */
-  def intersect(other: AttributeSet) = new AttributeSet(baseSet.intersect(other.baseSet))
+  def intersect(other: AttributeSet): AttributeSet =
+    new AttributeSet(baseSet.intersect(other.baseSet))
 
   override def foreach[U](f: (Attribute) => U): Unit = baseSet.map(_.a).foreach(f)
 
   // We must force toSeq to not be strict otherwise we end up with a [[Stream]] that captures all
   // sorts of things in its closure.
-  override def toSeq: Seq[Attribute] = baseSet.map(_.a).toArray.toSeq
+  override def toSeq: Seq[Attribute] = {
+    // We need to keep a deterministic output order for `baseSet` because this affects a variable
+    // order in generated code (e.g., `GenerateColumnAccessor`).
+    // See SPARK-18394 for details.
+    baseSet.map(_.a).toSeq.sortBy { a => (a.name, a.exprId.id) }
+  }
 
-  override def toString = "{" + baseSet.map(_.a).mkString(", ") + "}"
+  override def toString: String = "{" + baseSet.map(_.a).mkString(", ") + "}"
 
   override def isEmpty: Boolean = baseSet.isEmpty
 }

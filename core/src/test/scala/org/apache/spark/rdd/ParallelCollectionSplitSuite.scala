@@ -22,13 +22,15 @@ import scala.collection.immutable.NumericRange
 import org.scalacheck.Arbitrary._
 import org.scalacheck.Gen
 import org.scalacheck.Prop._
-import org.scalatest.FunSuite
-import org.scalatest.prop.Checkers
+import org.scalatestplus.scalacheck.Checkers
 
-class ParallelCollectionSplitSuite extends FunSuite with Checkers {
+import org.apache.spark.SparkFunSuite
+import org.apache.spark.util.ArrayImplicits._
+
+class ParallelCollectionSplitSuite extends SparkFunSuite with Checkers {
   test("one element per slice") {
     val data = Array(1, 2, 3)
-    val slices = ParallelCollectionRDD.slice(data, 3)
+    val slices = ParallelCollectionRDD.slice(data.toImmutableArraySeq, 3)
     assert(slices.size === 3)
     assert(slices(0).mkString(",") === "1")
     assert(slices(1).mkString(",") === "2")
@@ -36,7 +38,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
   }
 
   test("one slice") {
-    val data = Array(1, 2, 3)
+    val data = Seq(1, 2, 3)
     val slices = ParallelCollectionRDD.slice(data, 1)
     assert(slices.size === 1)
     assert(slices(0).mkString(",") === "1,2,3")
@@ -44,7 +46,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
 
   test("equal slices") {
     val data = Array(1, 2, 3, 4, 5, 6, 7, 8, 9)
-    val slices = ParallelCollectionRDD.slice(data, 3)
+    val slices = ParallelCollectionRDD.slice(data.toImmutableArraySeq, 3)
     assert(slices.size === 3)
     assert(slices(0).mkString(",") === "1,2,3")
     assert(slices(1).mkString(",") === "4,5,6")
@@ -53,7 +55,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
 
   test("non-equal slices") {
     val data = Array(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
-    val slices = ParallelCollectionRDD.slice(data, 3)
+    val slices = ParallelCollectionRDD.slice(data.toImmutableArraySeq, 3)
     assert(slices.size === 3)
     assert(slices(0).mkString(",") === "1,2,3")
     assert(slices(1).mkString(",") === "4,5,6")
@@ -76,22 +78,23 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
     assert(slices(0).mkString(",") === (0 to 32).mkString(","))
     assert(slices(1).mkString(",") === (33 to 66).mkString(","))
     assert(slices(2).mkString(",") === (67 to 100).mkString(","))
+    assert(slices(2).isInstanceOf[Range.Inclusive])
   }
 
   test("empty data") {
-    val data = new Array[Int](0)
+    val data = Seq.empty[Int]
     val slices = ParallelCollectionRDD.slice(data, 5)
     assert(slices.size === 5)
     for (slice <- slices) assert(slice.size === 0)
   }
 
   test("zero slices") {
-    val data = Array(1, 2, 3)
+    val data = Array(1, 2, 3).toImmutableArraySeq
     intercept[IllegalArgumentException] { ParallelCollectionRDD.slice(data, 0) }
   }
 
   test("negative number of slices") {
-    val data = Array(1, 2, 3)
+    val data = Array(1, 2, 3).toImmutableArraySeq
     intercept[IllegalArgumentException] { ParallelCollectionRDD.slice(data, -5) }
   }
 
@@ -99,7 +102,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
     val data = 1 until 100
     val slices = ParallelCollectionRDD.slice(data, 3)
     assert(slices.size === 3)
-    assert(slices.map(_.size).reduceLeft(_+_) === 99)
+    assert(slices.map(_.size).sum === 99)
     assert(slices.forall(_.isInstanceOf[Range]))
   }
 
@@ -107,7 +110,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
     val data = 1 to 100
     val slices = ParallelCollectionRDD.slice(data, 3)
     assert(slices.size === 3)
-    assert(slices.map(_.size).reduceLeft(_+_) === 100)
+    assert(slices.map(_.size).sum === 100)
     assert(slices.forall(_.isInstanceOf[Range]))
   }
 
@@ -115,7 +118,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
     val r = ParallelCollectionRDD.slice(1 to 7, 4)
     val nr = ParallelCollectionRDD.slice(1L to 7L, 4)
     assert(r.size === 4)
-    for (i <- 0 until r.size) {
+    for (i <- r.indices) {
       assert(r(i).size === nr(i).size)
     }
   }
@@ -124,7 +127,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
     val r = ParallelCollectionRDD.slice(List(1, 2), 4)
     val nr = ParallelCollectionRDD.slice(1L to 2L, 4)
     assert(r.size === 4)
-    for (i <- 0 until r.size) {
+    for (i <- r.indices) {
       assert(r(i).size === nr(i).size)
     }
   }
@@ -138,7 +141,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
       assert(slices(i).isInstanceOf[Range])
       val range = slices(i).asInstanceOf[Range]
       assert(range.start === i * (N / 40), "slice " + i + " start")
-      assert(range.end   === (i+1) * (N / 40), "slice " + i + " end")
+      assert(range.last  === (i + 1) * (N / 40) - 1, "slice " + i + " end")
       assert(range.step  === 1, "slice " + i + " step")
     }
   }
@@ -155,7 +158,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
         val slices = ParallelCollectionRDD.slice(d, n)
         ("n slices"    |: slices.size == n) &&
         ("concat to d" |: Seq.concat(slices: _*).mkString(",") == d.mkString(",")) &&
-        ("equal sizes" |: slices.map(_.size).forall(x => x==d.size/n || x==d.size/n+1))
+        ("equal sizes" |: slices.map(_.size).forall(x => x == d.size / n || x == d.size /n + 1))
     }
     check(prop)
   }
@@ -173,7 +176,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
         ("n slices"    |: slices.size == n) &&
         ("all ranges"  |: slices.forall(_.isInstanceOf[Range])) &&
         ("concat to d" |: Seq.concat(slices: _*).mkString(",") == d.mkString(",")) &&
-        ("equal sizes" |: slices.map(_.size).forall(x => x==d.size/n || x==d.size/n+1))
+        ("equal sizes" |: slices.map(_.size).forall(x => x == d.size / n || x == d.size / n + 1))
     }
     check(prop)
   }
@@ -191,7 +194,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
         ("n slices"    |: slices.size == n) &&
         ("all ranges"  |: slices.forall(_.isInstanceOf[Range])) &&
         ("concat to d" |: Seq.concat(slices: _*).mkString(",") == d.mkString(",")) &&
-        ("equal sizes" |: slices.map(_.size).forall(x => x==d.size/n || x==d.size/n+1))
+        ("equal sizes" |: slices.map(_.size).forall(x => x == d.size / n || x == d.size / n + 1))
     }
     check(prop)
   }
@@ -200,7 +203,7 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
     val data = 1L until 100L
     val slices = ParallelCollectionRDD.slice(data, 3)
     assert(slices.size === 3)
-    assert(slices.map(_.size).reduceLeft(_+_) === 99)
+    assert(slices.map(_.size).sum === 99)
     assert(slices.forall(_.isInstanceOf[NumericRange[_]]))
   }
 
@@ -208,23 +211,47 @@ class ParallelCollectionSplitSuite extends FunSuite with Checkers {
     val data = 1L to 100L
     val slices = ParallelCollectionRDD.slice(data, 3)
     assert(slices.size === 3)
-    assert(slices.map(_.size).reduceLeft(_+_) === 100)
+    assert(slices.map(_.size).sum === 100)
     assert(slices.forall(_.isInstanceOf[NumericRange[_]]))
   }
 
   test("exclusive ranges of doubles") {
-    val data = 1.0 until 100.0 by 1.0
+    val data = Range.BigDecimal(1, 100, 1)
     val slices = ParallelCollectionRDD.slice(data, 3)
     assert(slices.size === 3)
-    assert(slices.map(_.size).reduceLeft(_+_) === 99)
+    assert(slices.map(_.size).sum === 99)
     assert(slices.forall(_.isInstanceOf[NumericRange[_]]))
   }
 
   test("inclusive ranges of doubles") {
-    val data = 1.0 to 100.0 by 1.0
+    val data = Range.BigDecimal.inclusive(1, 100, 1)
     val slices = ParallelCollectionRDD.slice(data, 3)
     assert(slices.size === 3)
-    assert(slices.map(_.size).reduceLeft(_+_) === 100)
+    assert(slices.map(_.size).sum === 100)
     assert(slices.forall(_.isInstanceOf[NumericRange[_]]))
+  }
+
+  test("inclusive ranges with Int.MaxValue and Int.MinValue") {
+    val data1 = 1 to Int.MaxValue
+    val slices1 = ParallelCollectionRDD.slice(data1, 3)
+    assert(slices1.size === 3)
+    assert(slices1.map(_.size).sum === Int.MaxValue)
+    assert(slices1(2).isInstanceOf[Range.Inclusive])
+    val data2 = -2 to Int.MinValue by -1
+    val slices2 = ParallelCollectionRDD.slice(data2, 3)
+    assert(slices2.size == 3)
+    assert(slices2.map(_.size).sum === Int.MaxValue)
+    assert(slices2(2).isInstanceOf[Range.Inclusive])
+  }
+
+  test("empty ranges with Int.MaxValue and Int.MinValue") {
+    val data1 = Int.MaxValue until Int.MaxValue
+    val slices1 = ParallelCollectionRDD.slice(data1, 5)
+    assert(slices1.size === 5)
+    for (i <- 0 until 5) assert(slices1(i).size === 0)
+    val data2 = Int.MaxValue until Int.MaxValue
+    val slices2 = ParallelCollectionRDD.slice(data2, 5)
+    assert(slices2.size === 5)
+    for (i <- 0 until 5) assert(slices2(i).size === 0)
   }
 }

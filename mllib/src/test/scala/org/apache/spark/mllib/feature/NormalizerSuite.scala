@@ -17,15 +17,15 @@
 
 package org.apache.spark.mllib.feature
 
-import org.scalatest.FunSuite
-
 import breeze.linalg.{norm => brzNorm}
 
+import org.apache.spark.SparkFunSuite
 import org.apache.spark.mllib.linalg.{DenseVector, SparseVector, Vectors}
 import org.apache.spark.mllib.util.MLlibTestSparkContext
 import org.apache.spark.mllib.util.TestingUtils._
+import org.apache.spark.util.ArrayImplicits._
 
-class NormalizerSuite extends FunSuite with MLlibTestSparkContext {
+class NormalizerSuite extends SparkFunSuite with MLlibTestSparkContext {
 
   val data = Array(
     Vectors.sparse(3, Seq((0, -2.0), (1, 2.3))),
@@ -36,7 +36,7 @@ class NormalizerSuite extends FunSuite with MLlibTestSparkContext {
     Vectors.sparse(3, Seq())
   )
 
-  lazy val dataRDD = sc.parallelize(data, 3)
+  lazy val dataRDD = sc.parallelize(data.toImmutableArraySeq, 3)
 
   test("Normalization using L1 distance") {
     val l1Normalizer = new Normalizer(1)
@@ -44,18 +44,18 @@ class NormalizerSuite extends FunSuite with MLlibTestSparkContext {
     val data1 = data.map(l1Normalizer.transform)
     val data1RDD = l1Normalizer.transform(dataRDD)
 
-    assert((data, data1, data1RDD.collect()).zipped.forall {
+    assert(data.lazyZip(data1).lazyZip(data1RDD.collect()).forall {
       case (v1: DenseVector, v2: DenseVector, v3: DenseVector) => true
       case (v1: SparseVector, v2: SparseVector, v3: SparseVector) => true
       case _ => false
     }, "The vector type should be preserved after normalization.")
 
-    assert((data1, data1RDD.collect()).zipped.forall((v1, v2) => v1 ~== v2 absTol 1E-5))
+    assert(data1.lazyZip(data1RDD.collect()).forall((v1, v2) => v1 ~== v2 absTol 1E-5))
 
-    assert(brzNorm(data1(0).toBreeze, 1) ~== 1.0 absTol 1E-5)
-    assert(brzNorm(data1(2).toBreeze, 1) ~== 1.0 absTol 1E-5)
-    assert(brzNorm(data1(3).toBreeze, 1) ~== 1.0 absTol 1E-5)
-    assert(brzNorm(data1(4).toBreeze, 1) ~== 1.0 absTol 1E-5)
+    assert(brzNorm(data1(0).asBreeze, 1) ~== 1.0 absTol 1E-5)
+    assert(brzNorm(data1(2).asBreeze, 1) ~== 1.0 absTol 1E-5)
+    assert(brzNorm(data1(3).asBreeze, 1) ~== 1.0 absTol 1E-5)
+    assert(brzNorm(data1(4).asBreeze, 1) ~== 1.0 absTol 1E-5)
 
     assert(data1(0) ~== Vectors.sparse(3, Seq((0, -0.465116279), (1, 0.53488372))) absTol 1E-5)
     assert(data1(1) ~== Vectors.dense(0.0, 0.0, 0.0) absTol 1E-5)
@@ -71,18 +71,18 @@ class NormalizerSuite extends FunSuite with MLlibTestSparkContext {
     val data2 = data.map(l2Normalizer.transform)
     val data2RDD = l2Normalizer.transform(dataRDD)
 
-    assert((data, data2, data2RDD.collect()).zipped.forall {
+    assert(data.lazyZip(data2).lazyZip(data2RDD.collect()).forall {
       case (v1: DenseVector, v2: DenseVector, v3: DenseVector) => true
       case (v1: SparseVector, v2: SparseVector, v3: SparseVector) => true
       case _ => false
     }, "The vector type should be preserved after normalization.")
 
-    assert((data2, data2RDD.collect()).zipped.forall((v1, v2) => v1 ~== v2 absTol 1E-5))
+    assert(data2.lazyZip(data2RDD.collect()).forall((v1, v2) => v1 ~== v2 absTol 1E-5))
 
-    assert(brzNorm(data2(0).toBreeze, 2) ~== 1.0 absTol 1E-5)
-    assert(brzNorm(data2(2).toBreeze, 2) ~== 1.0 absTol 1E-5)
-    assert(brzNorm(data2(3).toBreeze, 2) ~== 1.0 absTol 1E-5)
-    assert(brzNorm(data2(4).toBreeze, 2) ~== 1.0 absTol 1E-5)
+    assert(brzNorm(data2(0).asBreeze, 2) ~== 1.0 absTol 1E-5)
+    assert(brzNorm(data2(2).asBreeze, 2) ~== 1.0 absTol 1E-5)
+    assert(brzNorm(data2(3).asBreeze, 2) ~== 1.0 absTol 1E-5)
+    assert(brzNorm(data2(4).asBreeze, 2) ~== 1.0 absTol 1E-5)
 
     assert(data2(0) ~== Vectors.sparse(3, Seq((0, -0.65617871), (1, 0.75460552))) absTol 1E-5)
     assert(data2(1) ~== Vectors.dense(0.0, 0.0, 0.0) absTol 1E-5)
@@ -98,18 +98,18 @@ class NormalizerSuite extends FunSuite with MLlibTestSparkContext {
     val dataInf = data.map(lInfNormalizer.transform)
     val dataInfRDD = lInfNormalizer.transform(dataRDD)
 
-    assert((data, dataInf, dataInfRDD.collect()).zipped.forall {
+    assert(data.lazyZip(dataInf).lazyZip(dataInfRDD.collect()).forall {
       case (v1: DenseVector, v2: DenseVector, v3: DenseVector) => true
       case (v1: SparseVector, v2: SparseVector, v3: SparseVector) => true
       case _ => false
     }, "The vector type should be preserved after normalization.")
 
-    assert((dataInf, dataInfRDD.collect()).zipped.forall((v1, v2) => v1 ~== v2 absTol 1E-5))
+    assert(dataInf.lazyZip(dataInfRDD.collect()).forall((v1, v2) => v1 ~== v2 absTol 1E-5))
 
-    assert(dataInf(0).toArray.map(Math.abs).max ~== 1.0 absTol 1E-5)
-    assert(dataInf(2).toArray.map(Math.abs).max ~== 1.0 absTol 1E-5)
-    assert(dataInf(3).toArray.map(Math.abs).max ~== 1.0 absTol 1E-5)
-    assert(dataInf(4).toArray.map(Math.abs).max ~== 1.0 absTol 1E-5)
+    assert(dataInf(0).toArray.map(math.abs).max ~== 1.0 absTol 1E-5)
+    assert(dataInf(2).toArray.map(math.abs).max ~== 1.0 absTol 1E-5)
+    assert(dataInf(3).toArray.map(math.abs).max ~== 1.0 absTol 1E-5)
+    assert(dataInf(4).toArray.map(math.abs).max ~== 1.0 absTol 1E-5)
 
     assert(dataInf(0) ~== Vectors.sparse(3, Seq((0, -0.86956522), (1, 1.0))) absTol 1E-5)
     assert(dataInf(1) ~== Vectors.dense(0.0, 0.0, 0.0) absTol 1E-5)

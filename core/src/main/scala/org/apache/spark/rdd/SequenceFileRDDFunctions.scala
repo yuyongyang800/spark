@@ -16,44 +16,28 @@
  */
 package org.apache.spark.rdd
 
-import scala.reflect.{ClassTag, classTag}
+import scala.reflect.ClassTag
 
 import org.apache.hadoop.io.Writable
 import org.apache.hadoop.io.compress.CompressionCodec
 import org.apache.hadoop.mapred.JobConf
 import org.apache.hadoop.mapred.SequenceFileOutputFormat
 
-import org.apache.spark.Logging
+import org.apache.spark.internal.{Logging, LogKeys}
 
 /**
  * Extra functions available on RDDs of (key, value) pairs to create a Hadoop SequenceFile,
- * through an implicit conversion. Note that this can't be part of PairRDDFunctions because
- * we need more implicit parameters to convert our keys and values to Writable.
+ * through an implicit conversion.
  *
- * Import `org.apache.spark.SparkContext._` at the top of their program to use these functions.
+ * @note This can't be part of PairRDDFunctions because we need more implicit parameters to
+ * convert our keys and values to Writable.
  */
-class SequenceFileRDDFunctions[K <% Writable: ClassTag, V <% Writable : ClassTag](
-    self: RDD[(K, V)])
+class SequenceFileRDDFunctions[K: IsWritable: ClassTag, V: IsWritable: ClassTag](
+    self: RDD[(K, V)],
+    _keyWritableClass: Class[_ <: Writable],
+    _valueWritableClass: Class[_ <: Writable])
   extends Logging
   with Serializable {
-
-  private def getWritableClass[T <% Writable: ClassTag](): Class[_ <: Writable] = {
-    val c = {
-      if (classOf[Writable].isAssignableFrom(classTag[T].runtimeClass)) {
-        classTag[T].runtimeClass
-      } else {
-        // We get the type of the Writable class by looking at the apply method which converts
-        // from T to Writable. Since we have two apply methods we filter out the one which
-        // is not of the form "java.lang.Object apply(java.lang.Object)"
-        implicitly[T => Writable].getClass.getDeclaredMethods().filter(
-            m => m.getReturnType().toString != "class java.lang.Object" &&
-                 m.getName() == "apply")(0).getReturnType
-
-      }
-       // TODO: use something like WritableConverter to avoid reflection
-    }
-    c.asInstanceOf[Class[_ <: Writable]]
-  }
 
   /**
    * Output the RDD as a Hadoop SequenceFile using the Writable types we infer from the RDD's key
@@ -62,29 +46,34 @@ class SequenceFileRDDFunctions[K <% Writable: ClassTag, V <% Writable : ClassTag
    * byte arrays to BytesWritable, and Strings to Text. The `path` can be on any Hadoop-supported
    * file system.
    */
-  def saveAsSequenceFile(path: String, codec: Option[Class[_ <: CompressionCodec]] = None) {
-    def anyToWritable[U <% Writable](u: U): Writable = u
+  def saveAsSequenceFile(
+      path: String,
+      codec: Option[Class[_ <: CompressionCodec]] = None): Unit = self.withScope {
+    def anyToWritable[U: IsWritable](u: U): Writable = u
 
-    val keyClass = getWritableClass[K]
-    val valueClass = getWritableClass[V]
-    val convertKey = !classOf[Writable].isAssignableFrom(self.keyClass)
-    val convertValue = !classOf[Writable].isAssignableFrom(self.valueClass)
+    // TODO We cannot force the return type of `anyToWritable` be same as keyWritableClass and
+    // valueWritableClass at the compile time. To implement that, we need to add type parameters to
+    // SequenceFileRDDFunctions. however, SequenceFileRDDFunctions is a public class so it will be a
+    // breaking change.
+    val convertKey = self.keyClass != _keyWritableClass
+    val convertValue = self.valueClass != _valueWritableClass
 
-    logInfo("Saving as sequence file of type (" + keyClass.getSimpleName + "," +
-      valueClass.getSimpleName + ")" )
+    logInfo(log"Saving as sequence file of type " +
+      log"(${MDC(LogKeys.KEY, _keyWritableClass.getSimpleName)}," +
+      log"${MDC(LogKeys.VALUE, _valueWritableClass.getSimpleName)})")
     val format = classOf[SequenceFileOutputFormat[Writable, Writable]]
     val jobConf = new JobConf(self.context.hadoopConfiguration)
     if (!convertKey && !convertValue) {
-      self.saveAsHadoopFile(path, keyClass, valueClass, format, jobConf, codec)
+      self.saveAsHadoopFile(path, _keyWritableClass, _valueWritableClass, format, jobConf, codec)
     } else if (!convertKey && convertValue) {
-      self.map(x => (x._1,anyToWritable(x._2))).saveAsHadoopFile(
-        path, keyClass, valueClass, format, jobConf, codec)
+      self.map(x => (x._1, anyToWritable(x._2))).saveAsHadoopFile(
+        path, _keyWritableClass, _valueWritableClass, format, jobConf, codec)
     } else if (convertKey && !convertValue) {
-      self.map(x => (anyToWritable(x._1),x._2)).saveAsHadoopFile(
-        path, keyClass, valueClass, format, jobConf, codec)
+      self.map(x => (anyToWritable(x._1), x._2)).saveAsHadoopFile(
+        path, _keyWritableClass, _valueWritableClass, format, jobConf, codec)
     } else if (convertKey && convertValue) {
-      self.map(x => (anyToWritable(x._1),anyToWritable(x._2))).saveAsHadoopFile(
-        path, keyClass, valueClass, format, jobConf, codec)
+      self.map(x => (anyToWritable(x._1), anyToWritable(x._2))).saveAsHadoopFile(
+        path, _keyWritableClass, _valueWritableClass, format, jobConf, codec)
     }
   }
 }

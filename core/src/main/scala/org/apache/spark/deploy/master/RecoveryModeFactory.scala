@@ -17,10 +17,12 @@
 
 package org.apache.spark.deploy.master
 
-import akka.serialization.Serialization
-
-import org.apache.spark.{Logging, SparkConf}
+import org.apache.spark.SparkConf
 import org.apache.spark.annotation.DeveloperApi
+import org.apache.spark.internal.{Logging, LogKeys}
+import org.apache.spark.internal.config.Deploy.{RECOVERY_COMPRESSION_CODEC, RECOVERY_DIRECTORY}
+import org.apache.spark.io.CompressionCodec
+import org.apache.spark.serializer.Serializer
 
 /**
  * ::DeveloperApi::
@@ -30,7 +32,7 @@ import org.apache.spark.annotation.DeveloperApi
  *
  */
 @DeveloperApi
-abstract class StandaloneRecoveryModeFactory(conf: SparkConf, serializer: Serialization) {
+abstract class StandaloneRecoveryModeFactory(conf: SparkConf, serializer: Serializer) {
 
   /**
    * PersistenceEngine defines how the persistent data(Information about worker, driver etc..)
@@ -49,22 +51,49 @@ abstract class StandaloneRecoveryModeFactory(conf: SparkConf, serializer: Serial
  * LeaderAgent in this case is a no-op. Since leader is forever leader as the actual
  * recovery is made by restoring from filesystem.
  */
-private[spark] class FileSystemRecoveryModeFactory(conf: SparkConf, serializer: Serialization)
+private[master] class FileSystemRecoveryModeFactory(conf: SparkConf, serializer: Serializer)
   extends StandaloneRecoveryModeFactory(conf, serializer) with Logging {
-  val RECOVERY_DIR = conf.get("spark.deploy.recoveryDirectory", "")
 
-  def createPersistenceEngine() = {
-    logInfo("Persisting recovery state to directory: " + RECOVERY_DIR)
-    new FileSystemPersistenceEngine(RECOVERY_DIR, serializer)
+  val recoveryDir = conf.get(RECOVERY_DIRECTORY)
+
+  def createPersistenceEngine(): PersistenceEngine = {
+    logInfo(log"Persisting recovery state to directory: ${MDC(LogKeys.PATH, recoveryDir)}")
+    val codec = conf.get(RECOVERY_COMPRESSION_CODEC).map(c => CompressionCodec.createCodec(conf, c))
+    new FileSystemPersistenceEngine(recoveryDir, serializer, codec)
   }
 
-  def createLeaderElectionAgent(master: LeaderElectable) = new MonarchyLeaderAgent(master)
+  def createLeaderElectionAgent(master: LeaderElectable): LeaderElectionAgent = {
+    new MonarchyLeaderAgent(master)
+  }
 }
 
-private[spark] class ZooKeeperRecoveryModeFactory(conf: SparkConf, serializer: Serialization)
-  extends StandaloneRecoveryModeFactory(conf, serializer) {
-  def createPersistenceEngine() = new ZooKeeperPersistenceEngine(conf, serializer)
+/**
+ * LeaderAgent in this case is a no-op. Since leader is forever leader as the actual
+ * recovery is made by restoring from RocksDB.
+ */
+private[master] class RocksDBRecoveryModeFactory(conf: SparkConf, serializer: Serializer)
+  extends StandaloneRecoveryModeFactory(conf, serializer) with Logging {
 
-  def createLeaderElectionAgent(master: LeaderElectable) =
+  def createPersistenceEngine(): PersistenceEngine = {
+    val recoveryDir = conf.get(RECOVERY_DIRECTORY)
+    logInfo(log"Persisting recovery state to directory: " +
+      log"${MDC(LogKeys.PATH, recoveryDir)}")
+    new RocksDBPersistenceEngine(recoveryDir, serializer)
+  }
+
+  def createLeaderElectionAgent(master: LeaderElectable): LeaderElectionAgent = {
+    new MonarchyLeaderAgent(master)
+  }
+}
+
+private[master] class ZooKeeperRecoveryModeFactory(conf: SparkConf, serializer: Serializer)
+  extends StandaloneRecoveryModeFactory(conf, serializer) {
+
+  def createPersistenceEngine(): PersistenceEngine = {
+    new ZooKeeperPersistenceEngine(conf, serializer)
+  }
+
+  def createLeaderElectionAgent(master: LeaderElectable): LeaderElectionAgent = {
     new ZooKeeperLeaderElectionAgent(master, conf)
+  }
 }

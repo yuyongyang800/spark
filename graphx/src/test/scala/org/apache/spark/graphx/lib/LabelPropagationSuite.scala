@@ -17,11 +17,10 @@
 
 package org.apache.spark.graphx.lib
 
-import org.scalatest.FunSuite
-
+import org.apache.spark.SparkFunSuite
 import org.apache.spark.graphx._
 
-class LabelPropagationSuite extends FunSuite with LocalSparkContext {
+class LabelPropagationSuite extends SparkFunSuite with LocalSparkContext {
   test("Label Propagation") {
     withSpark { sc =>
       // Construct a graph with two cliques connected by a single edge
@@ -34,9 +33,9 @@ class LabelPropagationSuite extends FunSuite with LocalSparkContext {
       val labels = LabelPropagation.run(graph, n * 4).cache()
 
       // All vertices within a clique should have the same label
-      val clique1Labels = labels.vertices.filter(_._1 < n).map(_._2).collect.toArray
+      val clique1Labels = labels.vertices.filter(_._1 < n).map(_._2).collect().toArray
       assert(clique1Labels.forall(_ == clique1Labels(0)))
-      val clique2Labels = labels.vertices.filter(_._1 >= n).map(_._2).collect.toArray
+      val clique2Labels = labels.vertices.filter(_._1 >= n).map(_._2).collect().toArray
       assert(clique2Labels.forall(_ == clique2Labels(0)))
       // The two cliques should have different labels
       assert(clique1Labels(0) != clique2Labels(0))

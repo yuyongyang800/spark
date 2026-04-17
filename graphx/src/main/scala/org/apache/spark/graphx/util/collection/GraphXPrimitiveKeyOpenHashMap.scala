@@ -17,9 +17,9 @@
 
 package org.apache.spark.graphx.util.collection
 
-import org.apache.spark.util.collection.OpenHashSet
-
 import scala.reflect._
+
+import org.apache.spark.util.collection.OpenHashSet
 
 /**
  * A fast hash map implementation for primitive, non-null keys. This hash map supports
@@ -56,7 +56,7 @@ class GraphXPrimitiveKeyOpenHashMap[@specialized(Long, Int) K: ClassTag,
 
   private var _oldValues: Array[V] = null
 
-  override def size = keySet.size
+  override def size: Int = keySet.size
 
   /** Get the value for a given key */
   def apply(k: K): V = {
@@ -71,7 +71,7 @@ class GraphXPrimitiveKeyOpenHashMap[@specialized(Long, Int) K: ClassTag,
   }
 
   /** Set the value for a key */
-  def update(k: K, v: V) {
+  def update(k: K, v: V): Unit = {
     val pos = keySet.addWithoutResize(k) & OpenHashSet.POSITION_MASK
     _values(pos) = v
     keySet.rehashIfNeeded(k, grow, move)
@@ -80,7 +80,7 @@ class GraphXPrimitiveKeyOpenHashMap[@specialized(Long, Int) K: ClassTag,
 
 
   /** Set the value for a key */
-  def setMerge(k: K, v: V, mergeF: (V, V) => V) {
+  def setMerge(k: K, v: V, mergeF: (V, V) => V): Unit = {
     val pos = keySet.addWithoutResize(k)
     val ind = pos & OpenHashSet.POSITION_MASK
     if ((pos & OpenHashSet.NONEXISTENCE_MASK) != 0) { // if first add
@@ -112,7 +112,7 @@ class GraphXPrimitiveKeyOpenHashMap[@specialized(Long, Int) K: ClassTag,
     }
   }
 
-  override def iterator = new Iterator[(K, V)] {
+  override def iterator: Iterator[(K, V)] = new Iterator[(K, V)] {
     var pos = 0
     var nextPair: (K, V) = computeNextPair()
 
@@ -128,26 +128,21 @@ class GraphXPrimitiveKeyOpenHashMap[@specialized(Long, Int) K: ClassTag,
       }
     }
 
-    def hasNext = nextPair != null
+    def hasNext: Boolean = nextPair != null
 
-    def next() = {
+    def next(): (K, V) = {
       val pair = nextPair
       nextPair = computeNextPair()
       pair
     }
   }
 
-  // The following member variables are declared as protected instead of private for the
-  // specialization to work (specialized class extends the unspecialized one and needs access
-  // to the "private" variables).
-  // They also should have been val's. We use var's because there is a Scala compiler bug that
-  // would throw illegal access error at runtime if they are declared as val's.
-  protected var grow = (newCapacity: Int) => {
+  private def grow(newCapacity: Int): Unit = {
     _oldValues = _values
     _values = new Array[V](newCapacity)
   }
 
-  protected var move = (oldPos: Int, newPos: Int) => {
+  private def move(oldPos: Int, newPos: Int): Unit = {
     _values(newPos) = _oldValues(oldPos)
   }
 }

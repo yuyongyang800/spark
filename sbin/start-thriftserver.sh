@@ -19,13 +19,17 @@
 
 #
 # Shell script for starting the Spark SQL Thrift server
+export SPARK_CONNECT_MODE=0
 
 # Enter posix mode for bash
 set -o posix
 
-# Figure out where Spark is installed
-FWDIR="$(cd "`dirname "$0"`"/..; pwd)"
+if [ -z "${SPARK_HOME}" ]; then
+  export SPARK_HOME="$(cd "`dirname "$0"`"/..; pwd)"
+fi
 
+# NOTE: This exact class name is matched downstream by SparkSubmit.
+# Any changes need to be reflected there.
 CLASS="org.apache.spark.sql.hive.thriftserver.HiveThriftServer2"
 
 function usage {
@@ -36,11 +40,15 @@ function usage {
   pattern+="\|Spark Command: "
   pattern+="\|======="
   pattern+="\|--help"
+  pattern+="\|Using Spark's default log4j profile:"
+  pattern+="\|^log4j:"
+  pattern+="\|Started daemon with process name"
+  pattern+="\|Registered signal handler for"
 
-  "$FWDIR"/bin/spark-submit --help 2>&1 | grep -v Usage 1>&2
+  "${SPARK_HOME}"/bin/spark-submit --help 2>&1 | grep -v Usage 1>&2
   echo
   echo "Thrift server options:"
-  "$FWDIR"/bin/spark-class $CLASS --help 2>&1 | grep -v "$pattern" 1>&2
+  "${SPARK_HOME}"/bin/spark-class $CLASS --help 2>&1 | grep -v "$pattern" 1>&2
 }
 
 if [[ "$@" = *--help ]] || [[ "$@" = *-h ]]; then
@@ -50,4 +58,4 @@ fi
 
 export SUBMIT_USAGE_FUNCTION=usage
 
-exec "$FWDIR"/sbin/spark-daemon.sh spark-submit $CLASS 1 "$@"
+exec "${SPARK_HOME}"/sbin/spark-daemon.sh submit $CLASS 1 --name "Thrift JDBC/ODBC Server" "$@"

@@ -17,13 +17,15 @@
 
 package org.apache.spark.deploy
 
+import java.io.File
+
 import scala.collection.mutable.ArrayBuffer
 
-import akka.actor.ActorSystem
-
-import org.apache.spark.{Logging, SparkConf}
-import org.apache.spark.deploy.worker.Worker
+import org.apache.spark.SparkConf
 import org.apache.spark.deploy.master.Master
+import org.apache.spark.deploy.worker.Worker
+import org.apache.spark.internal.{config, Logging, LogKeys}
+import org.apache.spark.rpc.RpcEnv
 import org.apache.spark.util.Utils
 
 /**
@@ -33,43 +35,90 @@ import org.apache.spark.util.Utils
  * fault recovery without spinning up a lot of processes.
  */
 private[spark]
-class LocalSparkCluster(numWorkers: Int, coresPerWorker: Int, memoryPerWorker: Int)
+class LocalSparkCluster private (
+    numWorkers: Int,
+    coresPerWorker: Int,
+    memoryPerWorker: Int,
+    conf: SparkConf)
   extends Logging {
 
   private val localHostname = Utils.localHostName()
-  private val masterActorSystems = ArrayBuffer[ActorSystem]()
-  private val workerActorSystems = ArrayBuffer[ActorSystem]()
+  private val masterRpcEnvs = ArrayBuffer[RpcEnv]()
+  private val workerRpcEnvs = ArrayBuffer[RpcEnv]()
+  // exposed for testing
+  var masterWebUIPort = -1
+  // for test only
+  private val workerDirs = ArrayBuffer[String]()
 
   def start(): Array[String] = {
-    logInfo("Starting a local Spark cluster with " + numWorkers + " workers.")
+    logInfo(log"Starting a local Spark cluster with " +
+      log"${MDC(LogKeys.NUM_WORKERS, numWorkers)} workers.")
+
+    // Disable REST server on Master in this mode unless otherwise specified
+    val _conf = conf.clone()
+      .setIfMissing(config.MASTER_REST_SERVER_ENABLED, false)
+      .set(config.SHUFFLE_SERVICE_ENABLED, false)
 
     /* Start the Master */
-    val conf = new SparkConf(false)
-    val (masterSystem, masterPort, _) = Master.startSystemAndActor(localHostname, 0, 0, conf)
-    masterActorSystems += masterSystem
-    val masterUrl = "spark://" + localHostname + ":" + masterPort
+    val (rpcEnv, webUiPort, _) = Master.startRpcEnvAndEndpoint(localHostname, 0, 0, _conf)
+    masterWebUIPort = webUiPort
+    masterRpcEnvs += rpcEnv
+    val masterUrl = "spark://" + Utils.localHostNameForURI() + ":" + rpcEnv.address.port
     val masters = Array(masterUrl)
 
     /* Start the Workers */
     for (workerNum <- 1 to numWorkers) {
-      val (workerSystem, _) = Worker.startSystemAndActor(localHostname, 0, 0, coresPerWorker,
-        memoryPerWorker, masters, null, Some(workerNum))
-      workerActorSystems += workerSystem
+      val workDir = if (Utils.isTesting) {
+        Utils.createTempDir(namePrefix = "worker").getAbsolutePath
+      } else null
+      if (Utils.isTesting) {
+        workerDirs += workDir
+      }
+      val workerEnv = Worker.startRpcEnvAndEndpoint(localHostname, 0, 0, coresPerWorker,
+        memoryPerWorker, masters, workDir, Some(workerNum), _conf,
+        conf.get(config.Worker.SPARK_WORKER_RESOURCE_FILE))
+      workerRpcEnvs += workerEnv
     }
 
     masters
   }
 
-  def stop() {
+  def workerLogfiles(): Seq[File] = {
+    workerDirs.toSeq.flatMap { dir =>
+      Utils.recursiveList(new File(dir))
+        .filter(f => f.isFile && """.*\.log$""".r.findFirstMatchIn(f.getName).isDefined)
+    }
+  }
+
+  def stop(): Unit = {
     logInfo("Shutting down local Spark cluster.")
     // Stop the workers before the master so they don't get upset that it disconnected
-    // TODO: In Akka 2.1.x, ActorSystem.awaitTermination hangs when you have remote actors!
-    //       This is unfortunate, but for now we just comment it out.
-    workerActorSystems.foreach(_.shutdown())
-    // workerActorSystems.foreach(_.awaitTermination())
-    masterActorSystems.foreach(_.shutdown())
-    // masterActorSystems.foreach(_.awaitTermination())
-    masterActorSystems.clear()
-    workerActorSystems.clear()
+    workerRpcEnvs.foreach(_.shutdown())
+    workerRpcEnvs.foreach(_.awaitTermination())
+    masterRpcEnvs.foreach(_.shutdown())
+    masterRpcEnvs.foreach(_.awaitTermination())
+    masterRpcEnvs.clear()
+    workerRpcEnvs.clear()
+    workerDirs.clear()
+    LocalSparkCluster.clear()
+  }
+}
+
+private[spark] object LocalSparkCluster {
+
+  private var localCluster: Option[LocalSparkCluster] = None
+
+  private[spark] def get: Option[LocalSparkCluster] = localCluster
+
+  private def clear(): Unit = localCluster = None
+
+  def apply(
+      numWorkers: Int,
+      coresPerWorker: Int,
+      memoryPerWorker: Int,
+      conf: SparkConf): LocalSparkCluster = {
+    localCluster =
+      Some(new LocalSparkCluster(numWorkers, coresPerWorker, memoryPerWorker, conf))
+    localCluster.get
   }
 }

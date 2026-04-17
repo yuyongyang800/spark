@@ -19,18 +19,17 @@ package org.apache.spark.ml.tuning
 
 import scala.collection.mutable
 
-import org.scalatest.FunSuite
-
+import org.apache.spark.SparkFunSuite
 import org.apache.spark.ml.param.{ParamMap, TestParams}
 
-class ParamGridBuilderSuite extends FunSuite {
+class ParamGridBuilderSuite extends SparkFunSuite {
 
   val solver = new TestParams()
   import solver.{inputCol, maxIter}
 
   test("param grid builder") {
     def validateGrid(maps: Array[ParamMap], expected: mutable.Set[(Int, String)]): Unit = {
-      assert(maps.size === expected.size)
+      assert(maps.length === expected.size)
       maps.foreach { m =>
         val tuple = (m(maxIter), m(inputCol))
         assert(expected.contains(tuple))

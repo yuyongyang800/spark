@@ -18,65 +18,85 @@
 package org.apache.spark.deploy.master
 
 import java.io._
+import java.nio.file.{FileAlreadyExistsException, Files, Paths}
 
 import scala.reflect.ClassTag
 
-import akka.serialization.Serialization
-
-import org.apache.spark.Logging
+import org.apache.spark.internal.Logging
+import org.apache.spark.internal.LogKeys._
+import org.apache.spark.io.CompressionCodec
+import org.apache.spark.serializer.{DeserializationStream, SerializationStream, Serializer}
+import org.apache.spark.util.ArrayImplicits._
+import org.apache.spark.util.Utils
 
 
 /**
  * Stores data in a single on-disk directory with one file per application and worker.
  * Files are deleted when applications and workers are removed.
  *
- * @param dir Directory to store files. Created if non-existent (but not recursively).
- * @param serialization Used to serialize our objects.
+ * @param dir Directory to store files. Created if non-existent.
+ * @param serializer Used to serialize our objects.
  */
-private[spark] class FileSystemPersistenceEngine(
+private[master] class FileSystemPersistenceEngine(
     val dir: String,
-    val serialization: Serialization)
+    val serializer: Serializer,
+    val codec: Option[CompressionCodec] = None)
   extends PersistenceEngine with Logging {
 
-  new File(dir).mkdir()
+  try {
+    Files.createDirectories(Paths.get(dir))
+  } catch {
+    case _: FileAlreadyExistsException if Files.isSymbolicLink(Paths.get(dir)) =>
+      Files.createDirectories(Paths.get(dir).toRealPath())
+  }
 
   override def persist(name: String, obj: Object): Unit = {
     serializeIntoFile(new File(dir + File.separator + name), obj)
   }
 
   override def unpersist(name: String): Unit = {
-    new File(dir + File.separator + name).delete()
+    val f = new File(dir + File.separator + name)
+    if (!f.delete()) {
+      logWarning(log"Error deleting ${MDC(PATH, f.getPath())}")
+    }
   }
 
-  override def read[T: ClassTag](prefix: String) = {
+  override def read[T: ClassTag](prefix: String): Seq[T] = {
     val files = new File(dir).listFiles().filter(_.getName.startsWith(prefix))
-    files.map(deserializeFromFile[T])
+    files.map(deserializeFromFile[T]).toImmutableArraySeq
   }
 
-  private def serializeIntoFile(file: File, value: AnyRef) {
+  private def serializeIntoFile(file: File, value: AnyRef): Unit = {
+    if (file.exists()) { throw new IllegalStateException("File already exists: " + file) }
     val created = file.createNewFile()
     if (!created) { throw new IllegalStateException("Could not create file: " + file) }
-    val serializer = serialization.findSerializerFor(value)
-    val serialized = serializer.toBinary(value)
-    val out = new FileOutputStream(file)
-    try {
-      out.write(serialized)
-    } finally {
-      out.close()
+    var fileOut: OutputStream = new FileOutputStream(file)
+    codec.foreach { c => fileOut = c.compressedOutputStream(fileOut) }
+    var out: SerializationStream = null
+    Utils.tryWithSafeFinally {
+      out = serializer.newInstance().serializeStream(fileOut)
+      out.writeObject(value)
+    } {
+      if (out != null) {
+        out.close()
+      }
+      fileOut.close()
     }
   }
 
   private def deserializeFromFile[T](file: File)(implicit m: ClassTag[T]): T = {
-    val fileData = new Array[Byte](file.length().asInstanceOf[Int])
-    val dis = new DataInputStream(new FileInputStream(file))
+    var fileIn: InputStream = new FileInputStream(file)
+    codec.foreach { c => fileIn = c.compressedInputStream(new FileInputStream(file)) }
+    var in: DeserializationStream = null
     try {
-      dis.readFully(fileData)
+      in = serializer.newInstance().deserializeStream(fileIn)
+      in.readObject[T]()
     } finally {
-      dis.close()
+      fileIn.close()
+      if (in != null) {
+        in.close()
+      }
     }
-    val clazz = m.runtimeClass.asInstanceOf[Class[T]]
-    val serializer = serialization.serializerFor(clazz)
-    serializer.fromBinary(fileData).asInstanceOf[T]
   }
 
 }

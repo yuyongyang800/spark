@@ -19,17 +19,16 @@ package org.apache.spark.util.collection
 
 import scala.reflect.ClassTag
 
-import org.apache.spark.annotation.DeveloperApi
-
 /**
- * :: DeveloperApi ::
  * A fast hash map implementation for nullable keys. This hash map supports insertions and updates,
  * but not deletions. This map is about 5X faster than java.util.HashMap, while using much less
  * space overhead.
  *
  * Under the hood, it uses our OpenHashSet implementation.
+ *
+ * NOTE: when using numeric type as the value type, the user of this class should be careful to
+ * distinguish between the 0/0.0/0L and non-exist value
  */
-@DeveloperApi
 private[spark]
 class OpenHashMap[K : ClassTag, @specialized(Long, Int, Double) V: ClassTag](
     initialCapacity: Int)
@@ -53,6 +52,15 @@ class OpenHashMap[K : ClassTag, @specialized(Long, Int, Double) V: ClassTag](
 
   override def size: Int = if (haveNullValue) _keySet.size + 1 else _keySet.size
 
+  /** Tests whether this map contains a binding for a key. */
+  def contains(k: K): Boolean = {
+    if (k == null) {
+      haveNullValue
+    } else {
+      _keySet.getPos(k) != OpenHashSet.INVALID_POS
+    }
+  }
+
   /** Get the value for a given key */
   def apply(k: K): V = {
     if (k == null) {
@@ -67,8 +75,26 @@ class OpenHashMap[K : ClassTag, @specialized(Long, Int, Double) V: ClassTag](
     }
   }
 
+  /** Get the value for a given key, return None if the key doesn't exist */
+  def get(k: K): Option[V] = {
+    if (k == null) {
+      if (haveNullValue) {
+        Some(nullValue)
+      } else {
+        None
+      }
+    } else {
+      val pos = _keySet.getPos(k)
+      if (pos < 0) {
+        None
+      } else {
+        Some(_values(pos))
+      }
+    }
+  }
+
   /** Set the value for a key */
-  def update(k: K, v: V) {
+  def update(k: K, v: V): Unit = {
     if (k == null) {
       haveNullValue = true
       nullValue = v
@@ -109,7 +135,7 @@ class OpenHashMap[K : ClassTag, @specialized(Long, Int, Double) V: ClassTag](
     }
   }
 
-  override def iterator = new Iterator[(K, V)] {
+  override def iterator: Iterator[(K, V)] = new Iterator[(K, V)] {
     var pos = -1
     var nextPair: (K, V) = computeNextPair()
 
@@ -132,26 +158,21 @@ class OpenHashMap[K : ClassTag, @specialized(Long, Int, Double) V: ClassTag](
       }
     }
 
-    def hasNext = nextPair != null
+    def hasNext: Boolean = nextPair != null
 
-    def next() = {
+    def next(): (K, V) = {
       val pair = nextPair
       nextPair = computeNextPair()
       pair
     }
   }
 
-  // The following member variables are declared as protected instead of private for the
-  // specialization to work (specialized class extends the non-specialized one and needs access
-  // to the "private" variables).
-  // They also should have been val's. We use var's because there is a Scala compiler bug that
-  // would throw illegal access error at runtime if they are declared as val's.
-  protected var grow = (newCapacity: Int) => {
+  private def grow(newCapacity: Int): Unit = {
     _oldValues = _values
     _values = new Array[V](newCapacity)
   }
 
-  protected var move = (oldPos: Int, newPos: Int) => {
+  private def move(oldPos: Int, newPos: Int): Unit = {
     _values(newPos) = _oldValues(oldPos)
   }
 }

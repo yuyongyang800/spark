@@ -17,7 +17,7 @@
 
 package org.apache.spark.util.collection
 
-import java.util.{Arrays, Comparator}
+import java.util.Comparator
 
 import com.google.common.hash.Hashing
 
@@ -32,12 +32,18 @@ import org.apache.spark.annotation.DeveloperApi
  * size, which is guaranteed to explore all spaces for each key (see
  * http://en.wikipedia.org/wiki/Quadratic_probing).
  *
+ * The map can support up to `375809638 (0.7 * 2 ^ 29)` elements.
+ *
  * TODO: Cache the hash values of each key? java.util.HashMap does that.
  */
 @DeveloperApi
 class AppendOnlyMap[K, V](initialCapacity: Int = 64)
   extends Iterable[(K, V)] with Serializable {
-  require(initialCapacity <= (1 << 29), "Can't make capacity bigger than 2^29 elements")
+
+  import AppendOnlyMap._
+
+  require(initialCapacity <= MAXIMUM_CAPACITY,
+    s"Can't make capacity bigger than ${MAXIMUM_CAPACITY} elements")
   require(initialCapacity >= 1, "Invalid initial capacity")
 
   private val LOAD_FACTOR = 0.7
@@ -134,15 +140,15 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
     var i = 1
     while (true) {
       val curKey = data(2 * pos)
-      if (k.eq(curKey) || k.equals(curKey)) {
-        val newValue = updateFunc(true, data(2 * pos + 1).asInstanceOf[V])
-        data(2 * pos + 1) = newValue.asInstanceOf[AnyRef]
-        return newValue
-      } else if (curKey.eq(null)) {
+      if (curKey.eq(null)) {
         val newValue = updateFunc(false, null.asInstanceOf[V])
         data(2 * pos) = k
         data(2 * pos + 1) = newValue.asInstanceOf[AnyRef]
         incrementSize()
+        return newValue
+      } else if (k.eq(curKey) || k.equals(curKey)) {
+        val newValue = updateFunc(true, data(2 * pos + 1).asInstanceOf[V])
+        data(2 * pos + 1) = newValue.asInstanceOf[AnyRef]
         return newValue
       } else {
         val delta = i
@@ -192,7 +198,7 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
   override def size: Int = curSize
 
   /** Increase table size by 1, rehashing if necessary */
-  private def incrementSize() {
+  private def incrementSize(): Unit = {
     curSize += 1
     if (curSize > growThreshold) {
       growTable()
@@ -202,16 +208,13 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
   /**
    * Re-hash a value to deal better with hash functions that don't differ in the lower bits.
    */
-  private def rehash(h: Int): Int = Hashing.murmur3_32().hashInt(h).asInt()
+  private def rehash(h: Int): Int = Hashing.murmur3_32_fixed().hashInt(h).asInt()
 
   /** Double the table's size and re-hash everything */
-  protected def growTable() {
+  protected def growTable(): Unit = {
+    // capacity < MAXIMUM_CAPACITY (2 ^ 29) so capacity * 2 won't overflow
     val newCapacity = capacity * 2
-    if (newCapacity >= (1 << 30)) {
-      // We can't make the table this big because we want an array of 2x
-      // that size for our data, but array sizes are at most Int.MaxValue
-      throw new Exception("Can't make capacity bigger than 2^29 elements")
-    }
+    require(newCapacity <= MAXIMUM_CAPACITY, s"Can't contain more than ${growThreshold} elements")
     val newData = new Array[AnyRef](2 * newCapacity)
     val newMask = newCapacity - 1
     // Insert all our old values into the new array. Note that because our old keys are
@@ -291,4 +294,8 @@ class AppendOnlyMap[K, V](initialCapacity: Int = 64)
    * Return whether the next insert will cause the map to grow
    */
   def atGrowThreshold: Boolean = curSize == growThreshold
+}
+
+private object AppendOnlyMap {
+  val MAXIMUM_CAPACITY = (1 << 29)
 }

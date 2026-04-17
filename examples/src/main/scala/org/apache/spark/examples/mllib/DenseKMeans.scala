@@ -15,9 +15,11 @@
  * limitations under the License.
  */
 
+// scalastyle:off println
 package org.apache.spark.examples.mllib
 
-import org.apache.log4j.{Level, Logger}
+import org.apache.logging.log4j.Level
+import org.apache.logging.log4j.core.config.Configurator
 import scopt.OptionParser
 
 import org.apache.spark.{SparkConf, SparkContext}
@@ -46,7 +48,7 @@ object DenseKMeans {
       numIterations: Int = 10,
       initializationMode: InitializationMode = Parallel) extends AbstractParams[Params]
 
-  def main(args: Array[String]) {
+  def main(args: Array[String]): Unit = {
     val defaultParams = Params()
 
     val parser = new OptionParser[Params]("DenseKMeans") {
@@ -56,7 +58,7 @@ object DenseKMeans {
         .text(s"number of clusters, required")
         .action((x, c) => c.copy(k = x))
       opt[Int]("numIterations")
-        .text(s"number of iterations, default; ${defaultParams.numIterations}")
+        .text(s"number of iterations, default: ${defaultParams.numIterations}")
         .action((x, c) => c.copy(numIterations = x))
       opt[String]("initMode")
         .text(s"initialization mode (${InitializationMode.values.mkString(",")}), " +
@@ -68,18 +70,17 @@ object DenseKMeans {
         .action((x, c) => c.copy(input = x))
     }
 
-    parser.parse(args, defaultParams).map { params =>
-      run(params)
-    }.getOrElse {
-      sys.exit(1)
+    parser.parse(args, defaultParams) match {
+      case Some(params) => run(params)
+      case _ => sys.exit(1)
     }
   }
 
-  def run(params: Params) {
+  def run(params: Params): Unit = {
     val conf = new SparkConf().setAppName(s"DenseKMeans with $params")
     val sc = new SparkContext(conf)
 
-    Logger.getRootLogger.setLevel(Level.WARN)
+    Configurator.setRootLevel(Level.WARN)
 
     val examples = sc.textFile(params.input).map { line =>
       Vectors.dense(line.split(' ').map(_.toDouble))
@@ -107,3 +108,4 @@ object DenseKMeans {
     sc.stop()
   }
 }
+// scalastyle:on println

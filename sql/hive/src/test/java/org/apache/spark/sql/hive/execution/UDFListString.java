@@ -17,10 +17,11 @@
 
 package org.apache.spark.sql.hive.execution;
 
+import java.util.List;
+
 import org.apache.hadoop.hive.ql.exec.UDF;
 
-import java.util.List;
-import org.apache.commons.lang.StringUtils;
+import org.apache.spark.network.util.JavaUtils;
 
 public class UDFListString extends UDF {
 
@@ -31,7 +32,7 @@ public class UDFListString extends UDF {
     @SuppressWarnings("unchecked")
     List<Object> s = (List<Object>) a;
 
-    return StringUtils.join(s, ',');
+    return JavaUtils.join(s, ",");
   }
 
 
