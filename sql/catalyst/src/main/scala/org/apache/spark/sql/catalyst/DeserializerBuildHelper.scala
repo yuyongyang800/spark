@@ -24,6 +24,7 @@ import org.apache.spark.sql.catalyst.encoders.AgnosticEncoders.{ArrayEncoder, Bo
 import org.apache.spark.sql.catalyst.encoders.EncoderUtils.{dataTypeForClass, externalDataTypeFor, isNativeEncoder}
 import org.apache.spark.sql.catalyst.expressions.{Expression, GetStructField, IsNull, Literal, MapKeys, MapValues, UpCast}
 import org.apache.spark.sql.catalyst.expressions.objects.{AssertNotNull, CreateExternalRow, DecodeUsingSerializer, InitializeJavaBean, Invoke, NewInstance, StaticInvoke, UnresolvedCatalystToExternalMap, UnresolvedMapObjects, WrapOption}
+import org.apache.spark.sql.catalyst.types.ops.TypeOps
 import org.apache.spark.sql.catalyst.util.{ArrayBasedMapData, CharVarcharCodegenUtils, DateTimeUtils, IntervalUtils, STUtils}
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
@@ -289,6 +290,24 @@ object DeserializerBuildHelper {
    * @param isTopLevel true if we are creating a deserializer for the top level value.
    */
   private def createDeserializer(
+      enc: AgnosticEncoder[_],
+      path: Expression,
+      walkedTypePath: WalkedTypePath,
+      isTopLevel: Boolean = false): Expression = enc match {
+    // OptionEncoder and TransformingEncoder proxy `dataType` to the wrapped encoder, so the
+    // framework dispatch below (which keys off `enc.dataType`) would otherwise fire on the wrapper
+    // and skip WrapOption / the transforming codec. Route these wrappers through the default path
+    // first, so the framework leaf dispatch only ever sees unwrapped leaf encoders.
+    case _: OptionEncoder[_] | _: TransformingEncoder[_, _] =>
+      createDeserializerDefault(enc, path, walkedTypePath, isTopLevel)
+    // Framework dispatch runs before encoder-type checks in the default path. Safe because
+    // framework types use dedicated leaf encoders, never migration shims or native primitives.
+    case _ =>
+      TypeOps(enc.dataType).flatMap(_.createDeserializer(path, walkedTypePath, isTopLevel))
+        .getOrElse(createDeserializerDefault(enc, path, walkedTypePath, isTopLevel))
+  }
+
+  private def createDeserializerDefault(
       enc: AgnosticEncoder[_],
       path: Expression,
       walkedTypePath: WalkedTypePath,

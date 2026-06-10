@@ -17,23 +17,20 @@
 
 package org.apache.spark.sql.types.ops
 
+import org.apache.arrow.vector.types.pojo.ArrowType
+
 import org.apache.spark.sql.catalyst.encoders.AgnosticEncoder
 import org.apache.spark.sql.internal.SqlApiConf
-import org.apache.spark.sql.types.{DataType, TimeType}
+import org.apache.spark.sql.types.{DataType, TimestampLTZNanosType, TimestampNTZNanosType, TimeType}
 import org.apache.spark.unsafe.types.UTF8String
 
 /**
  * Client-side (spark-api) type operations for the Types Framework.
  *
  * This trait consolidates all client-side operations that a data type must implement to be usable
- * in the Spark SQL API layer. All methods are mandatory because a type cannot function correctly
- * without string formatting (needed for CAST to STRING, EXPLAIN, SHOW) or encoding (needed for
- * Dataset[T] operations).
- *
- * This single-interface design was chosen over separate FormatTypeOps/EncodeTypeOps traits to
- * make it clear what a new type must implement - there is one mandatory interface, and it
- * contains everything required. Optional capabilities (e.g., proto, Arrow, JDBC) are defined as
- * separate traits that can be mixed in incrementally.
+ * in the Spark SQL API layer. Mandatory methods (format, toSQLValue, getEncoder) must be
+ * implemented by every type. Optional methods (Arrow, Python, Hive, Thrift) return Option and
+ * default to None - types implement them as they expand their integration coverage.
  *
  * RELATIONSHIP TO TypeOps:
  *   - TypeOps (catalyst): Server-side operations - physical types, literals, conversions
@@ -93,6 +90,69 @@ trait TypeApiOps extends Serializable {
    *   AgnosticEncoder instance (e.g., LocalTimeEncoder for TimeType)
    */
   def getEncoder: AgnosticEncoder[_]
+
+  // ==================== Utilities ====================
+
+  /**
+   * Null-safe conversion helper. Returns null for null input, applies the partial function for
+   * non-null input, and returns null for unmatched values.
+   */
+  protected def nullSafeConvert(input: Any)(f: PartialFunction[Any, Any]): Any = {
+    if (input == null) {
+      null
+    } else {
+      f.applyOrElse(input, (_: Any) => null)
+    }
+  }
+
+  // ==================== Arrow Conversion (optional) ====================
+
+  /** Converts this DataType to its Arrow representation. Returns None if not supported. */
+  def toArrowType(timeZoneId: String): Option[ArrowType] = None
+
+  // ==================== Python Interop (optional) ====================
+
+  /** Returns true if values of this type need conversion when passed to/from Python. */
+  def needConversionInPython: Option[Boolean] = None
+
+  /** Creates a converter function for Python/Py4J interop. */
+  def makeFromJava: Option[Any => Any] = None
+
+  // ==================== External-Value Formatting (optional) ====================
+
+  /**
+   * Renders an external (public-facing) value as a display string, or returns None to let the
+   * caller fall back to its own legacy rendering. Unlike [[format]], which takes the internal
+   * representation, this takes the external value a public Row holds (e.g. java.time.LocalTime
+   * for TimeType).
+   *
+   * Consumer: Row JSON (Row.json / Row.prettyJson). Semantics:
+   *   - Some(s): s is used as the rendered JSON string.
+   *   - None: Row JSON falls back to its legacy toJsonDefault rendering.
+   *   - throw: an implementation may raise instead, to signal that rendering this type on this
+   *     zone-less path is unsupported (e.g. the nanosecond timestamp types raise
+   *     UNSUPPORTED_FEATURE.TIMESTAMP_NANOS_TO_STRING).
+   *
+   * Returning None silently routes the type into the legacy path, so a type that must be rendered
+   * by the framework should override this (every currently registered type does).
+   */
+  def formatExternal(value: Any): Option[String] = None
+
+  /**
+   * Renders an external value for Hive-style output (HiveResult.toHiveString). `nested` indicates
+   * whether the value appears inside an array/map/struct, which may format/quote it differently.
+   * Semantics mirror the single-arg overload: Some(s) is used directly, None falls back to
+   * HiveResult's zone-aware legacy rendering. The default delegates to the single-arg overload;
+   * override it separately when the two consumers need different behavior (e.g. the nanosecond
+   * timestamp types throw on the zone-less Row JSON path but return None here so the zone-aware
+   * Hive path renders them).
+   */
+  def formatExternal(value: Any, nested: Boolean): Option[String] = formatExternal(value)
+
+  // ==================== Thrift Mapping (optional) ====================
+
+  /** Returns the Thrift TTypeId name for this type (e.g., "STRING_TYPE"). */
+  def thriftTypeName: Option[String] = None
 }
 
 /**
@@ -119,7 +179,23 @@ object TypeApiOps {
     if (!SqlApiConf.get.typesFrameworkEnabled) return None
     dt match {
       case tt: TimeType => Some(new TimeTypeApiOps(tt))
+      case t: TimestampNTZNanosType => Some(new TimestampNTZNanosTypeApiOps(t))
+      case t: TimestampLTZNanosType => Some(new TimestampLTZNanosTypeApiOps(t))
       // Add new types here - single registration point
+      case _ => None
+    }
+  }
+
+  /**
+   * Reverse lookup: converts an Arrow type to a Spark DataType.
+   */
+  def fromArrowType(at: ArrowType): Option[DataType] = {
+    import org.apache.arrow.vector.types.TimeUnit
+    if (!SqlApiConf.get.typesFrameworkEnabled) return None
+    at match {
+      case t: ArrowType.Time if t.getUnit == TimeUnit.NANOSECOND && t.getBitWidth == 8 * 8 =>
+        Some(TimeType(TimeType.MICROS_PRECISION))
+      // Add new framework types here
       case _ => None
     }
   }

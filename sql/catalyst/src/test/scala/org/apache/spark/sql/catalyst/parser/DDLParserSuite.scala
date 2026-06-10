@@ -22,7 +22,7 @@ import java.util.Locale
 import org.apache.spark.SparkThrowable
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.catalyst.analysis._
-import org.apache.spark.sql.catalyst.expressions.{And, EqualTo, GreaterThan, Hex, Literal}
+import org.apache.spark.sql.catalyst.expressions.{Add, And, EqualTo, GreaterThan, Hex, Literal}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.connector.catalog.IdentityColumnSpec
 import org.apache.spark.sql.connector.catalog.TableChange.ColumnPosition.{after, first}
@@ -1790,26 +1790,28 @@ class DDLParserSuite extends AnalysisTest {
           Literal(5))))
   }
 
-  test("insert table: REPLACE WHERE with tableAlias and BY NAME") {
-    parseCompare(
-      "INSERT INTO testcat.ns1.ns2.tbl AS t BY NAME REPLACE WHERE a > 5 SELECT * FROM source",
-      OverwriteByExpression.byName(
-        UnresolvedRelation(Seq("testcat", "ns1", "ns2", "tbl")),
-        Project(Seq(UnresolvedStar(None)), UnresolvedRelation(Seq("source"))),
-        GreaterThan(
-          UnresolvedAttribute("a"),
-          Literal(5))))
+  test("insert table: REPLACE WHERE rejects tableAlias with BY NAME") {
+    val sql =
+      "INSERT INTO testcat.ns1.ns2.tbl AS t BY NAME REPLACE WHERE a > 5 SELECT * FROM source"
+    checkError(
+      exception = parseException(sql),
+      condition = "INSERT_REPLACE_WHERE_TABLE_ALIAS_NOT_ALLOWED",
+      parameters = Map.empty,
+      context = ExpectedContext(
+        fragment = "INSERT INTO testcat.ns1.ns2.tbl AS t BY NAME REPLACE WHERE a > 5",
+        start = 0, stop = 63))
   }
 
-  test("insert table: REPLACE WHERE with tableAlias without BY NAME") {
-    parseCompare(
-      "INSERT INTO testcat.ns1.ns2.tbl AS t REPLACE WHERE a > 5 SELECT * FROM source",
-      OverwriteByExpression.byPosition(
-        UnresolvedRelation(Seq("testcat", "ns1", "ns2", "tbl")),
-        Project(Seq(UnresolvedStar(None)), UnresolvedRelation(Seq("source"))),
-        GreaterThan(
-          UnresolvedAttribute("a"),
-          Literal(5))))
+  test("insert table: REPLACE WHERE rejects tableAlias without BY NAME") {
+    val sql =
+      "INSERT INTO testcat.ns1.ns2.tbl AS t REPLACE WHERE a > 5 SELECT * FROM source"
+    checkError(
+      exception = parseException(sql),
+      condition = "INSERT_REPLACE_WHERE_TABLE_ALIAS_NOT_ALLOWED",
+      parameters = Map.empty,
+      context = ExpectedContext(
+        fragment = "INSERT INTO testcat.ns1.ns2.tbl AS t REPLACE WHERE a > 5",
+        start = 0, stop = 55))
   }
 
   for {
@@ -2761,7 +2763,7 @@ class DDLParserSuite extends AnalysisTest {
     comparePlans(
       parsePlan("CACHE TABLE t AS SELECT * FROM testData"),
       CacheTableAsSelect(
-        "t",
+        Literal("t"),
         Project(Seq(UnresolvedStar(None)), UnresolvedRelation(Seq("testData"))),
         "SELECT * FROM testData",
         false,
@@ -3234,7 +3236,8 @@ class DDLParserSuite extends AnalysisTest {
         "b",
         IntegerType,
         nullable = false,
-        generationExpression = Some("a+1")
+        generationExpression = Some(GeneratedColumnExpression(
+          Add(UnresolvedAttribute(Seq("a")), Literal(1)), "a+1"))
       )
     )
     comparePlans(parsePlan(

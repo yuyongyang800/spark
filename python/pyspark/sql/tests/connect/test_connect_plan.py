@@ -112,6 +112,20 @@ class SparkConnectPlanTests(PlanOnlyTestFixture):
             join_plan.root.join.join_type,
         )
 
+    def test_zip(self):
+        left_input = self.connect.readTable(table_name=self.tbl_name)
+        right_input = self.connect.readTable(table_name=self.tbl_name)
+        plan = left_input.zip(right_input)._plan.to_proto(self.connect)
+        self.assertIsNotNone(plan.root.zip)
+        self.assertEqual(
+            plan.root.zip.left.read.named_table.unparsed_identifier,
+            self.tbl_name,
+        )
+        self.assertEqual(
+            plan.root.zip.right.read.named_table.unparsed_identifier,
+            self.tbl_name,
+        )
+
     def test_filter(self):
         df = self.connect.readTable(table_name=self.tbl_name)
         plan = df.filter(df.col_name > 3)._plan.to_proto(self.connect)
@@ -343,11 +357,6 @@ class SparkConnectPlanTests(PlanOnlyTestFixture):
         from pyspark.sql.connect.observation import Observation
 
         class MockDF(DataFrame):
-            def __new__(cls, df: DataFrame) -> "DataFrame":
-                self = object.__new__(cls)
-                self.__init__(df)  # type: ignore[misc]
-                return self
-
             def __init__(self, df: DataFrame):
                 super().__init__(df._plan, df._session)
 

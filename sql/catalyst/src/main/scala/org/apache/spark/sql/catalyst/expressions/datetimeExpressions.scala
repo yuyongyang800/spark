@@ -24,9 +24,11 @@ import java.util.Locale
 
 import org.apache.commons.text.StringEscapeUtils
 
-import org.apache.spark.{SparkDateTimeException, SparkIllegalArgumentException}
+import org.apache.spark.{SparkException, SparkIllegalArgumentException}
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.analysis.{ExpressionBuilder, FunctionRegistry}
+import org.apache.spark.sql.catalyst.analysis.{ExpressionBuilder, FunctionRegistry, TypeCheckResult}
+import org.apache.spark.sql.catalyst.analysis.TypeCheckResult.{DataTypeMismatch, TypeCheckSuccess}
+import org.apache.spark.sql.catalyst.expressions.Cast.{ordinalNumber, toSQLExpr, toSQLId, toSQLType, toSQLValue}
 import org.apache.spark.sql.catalyst.expressions.codegen._
 import org.apache.spark.sql.catalyst.expressions.codegen.Block._
 import org.apache.spark.sql.catalyst.expressions.objects.StaticInvoke
@@ -1322,18 +1324,20 @@ abstract class ToTimestamp
             null
           } else {
             val formatter = formatterOption.getOrElse(getFormatter(fmt.toString))
-            try {
-              if (forTimestampNTZ) {
-                formatter.parseWithoutTimeZone(t.asInstanceOf[UTF8String].toString)
-              } else {
-                formatter.parse(t.asInstanceOf[UTF8String].toString) / downScaleFactor
+            val str = t.asInstanceOf[UTF8String].toString
+            if (failOnError) {
+              DateTimeExpressionUtils.parseToTimestampExact(
+                formatter, str, downScaleFactor, forTimestampNTZ, suggestedFuncOnFail)
+            } else {
+              try {
+                if (forTimestampNTZ) {
+                  formatter.parseWithoutTimeZone(str)
+                } else {
+                  formatter.parse(str) / downScaleFactor
+                }
+              } catch {
+                case e if isParseError(e) => null
               }
-            } catch {
-              case e: DateTimeException if failOnError =>
-                throw QueryExecutionErrors.ansiDateTimeParseError(e, suggestedFuncOnFail)
-              case e: ParseException if failOnError =>
-                throw QueryExecutionErrors.ansiDateTimeParseError(e, suggestedFuncOnFail)
-              case e if isParseError(e) => null
             }
           }
       }
@@ -1342,11 +1346,7 @@ abstract class ToTimestamp
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val javaType = CodeGenerator.javaType(dataType)
-    val parseErrorBranch: String = if (failOnError) {
-      s"throw QueryExecutionErrors.ansiDateTimeParseError(e, \"${suggestedFuncOnFail}\");"
-    } else {
-      s"${ev.isNull} = true;"
-    }
+    val utils = classOf[DateTimeExpressionUtils].getName
     val parseMethod = if (forTimestampNTZ) {
       "parseWithoutTimeZone"
     } else {
@@ -1357,21 +1357,35 @@ abstract class ToTimestamp
     } else {
       s"/ $downScaleFactor"
     }
+    // Emits the string -> timestamp parse body. The ANSI (failOnError) branch
+    // delegates the parse and the parse-error -> ANSI error translation to
+    // DateTimeExpressionUtils.parseToTimestampExact, collapsing the inline
+    // try/catch to a single call. The non-ANSI branch keeps the inline
+    // try/catch that maps a parse failure to a null result.
+    def parseTimestampCode(formatterExpr: String, inputExpr: String): String = {
+      if (failOnError) {
+        s"""${ev.value} = $utils.parseToTimestampExact(
+           |    $formatterExpr, $inputExpr, ${downScaleFactor}L,
+           |    $forTimestampNTZ, "$suggestedFuncOnFail");""".stripMargin
+      } else {
+        s"""
+           |try {
+           |  ${ev.value} = $formatterExpr.$parseMethod($inputExpr) $downScaleCode;
+           |} catch (java.time.DateTimeException e) {
+           |  ${ev.isNull} = true;
+           |} catch (java.text.ParseException e) {
+           |  ${ev.isNull} = true;
+           |}
+           |""".stripMargin
+      }
+    }
 
     left.dataType match {
       case _: StringType => formatterOption.map { fmt =>
         val df = classOf[TimestampFormatter].getName
         val formatterName = ctx.addReferenceObj("formatter", fmt, df)
         nullSafeCodeGen(ctx, ev, (datetimeStr, _) =>
-          s"""
-             |try {
-             |  ${ev.value} = $formatterName.$parseMethod($datetimeStr.toString()) $downScaleCode;
-             |} catch (java.time.DateTimeException e) {
-             |  ${parseErrorBranch}
-             |} catch (java.text.ParseException e) {
-             |  ${parseErrorBranch}
-             |}
-             |""".stripMargin)
+          parseTimestampCode(formatterName, s"$datetimeStr.toString()"))
       }.getOrElse {
         val zid = ctx.addReferenceObj("zoneId", zoneId, classOf[ZoneId].getName)
         val tf = TimestampFormatter.getClass.getName.stripSuffix("$")
@@ -1384,13 +1398,7 @@ abstract class ToTimestamp
              |  $zid,
              |  $ldf$$.MODULE$$.SIMPLE_DATE_FORMAT(),
              |  true);
-             |try {
-             |  ${ev.value} = $timestampFormatter.$parseMethod($string.toString()) $downScaleCode;
-             |} catch (java.time.DateTimeException e) {
-             |    ${parseErrorBranch}
-             |} catch (java.text.ParseException e) {
-             |    ${parseErrorBranch}
-             |}
+             |${parseTimestampCode(timestampFormatter, s"$string.toString()")}
              |""".stripMargin)
       }
       case TimestampType | TimestampNTZType =>
@@ -1586,17 +1594,16 @@ case class NextDay(
   override def nullable: Boolean = true
 
   override def nullSafeEval(start: Any, dayOfW: Any): Any = {
-    try {
-      val dow = DateTimeUtils.getDayOfWeekFromString(dayOfW.asInstanceOf[UTF8String])
-      val sd = start.asInstanceOf[Int]
-      DateTimeUtils.getNextDateForDayOfWeek(sd, dow)
-    } catch {
-      case e: SparkIllegalArgumentException =>
-        if (failOnError) {
-          throw e
-        } else {
-          null
-        }
+    if (failOnError) {
+      DateTimeExpressionUtils.getNextDateExact(
+        start.asInstanceOf[Int], dayOfW.asInstanceOf[UTF8String])
+    } else {
+      try {
+        val dow = DateTimeUtils.getDayOfWeekFromString(dayOfW.asInstanceOf[UTF8String])
+        DateTimeUtils.getNextDateForDayOfWeek(start.asInstanceOf[Int], dow)
+      } catch {
+        case _: SparkIllegalArgumentException => null
+      }
     }
   }
 
@@ -1607,19 +1614,22 @@ case class NextDay(
       dayOfWeekTerm: String,
       sd: String,
       dowS: String): String = {
-    val failOnErrorBranch = if (failOnError) {
-      "throw e;"
+    if (failOnError) {
+      // In ANSI mode the only exception (SparkIllegalArgumentException for an
+      // invalid day-of-week) must propagate, so the previous catch merely
+      // rethrew it. Delegate to the helper and drop the no-op try/catch.
+      val utils = classOf[DateTimeExpressionUtils].getName
+      s"${ev.value} = $utils.getNextDateExact($sd, $dowS);"
     } else {
-      s"${ev.isNull} = true;"
+      s"""
+       |try {
+       |  int $dayOfWeekTerm = $dateTimeUtilClass.getDayOfWeekFromString($dowS);
+       |  ${ev.value} = $dateTimeUtilClass.getNextDateForDayOfWeek($sd, $dayOfWeekTerm);
+       |} catch (org.apache.spark.SparkIllegalArgumentException e) {
+       |  ${ev.isNull} = true;
+       |}
+       |""".stripMargin
     }
-    s"""
-     |try {
-     |  int $dayOfWeekTerm = $dateTimeUtilClass.getDayOfWeekFromString($dowS);
-     |  ${ev.value} = $dateTimeUtilClass.getNextDateForDayOfWeek($sd, $dayOfWeekTerm);
-     |} catch (org.apache.spark.SparkIllegalArgumentException e) {
-     |  $failOnErrorBranch
-     |}
-     |""".stripMargin
   }
 
   override protected def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
@@ -2570,30 +2580,36 @@ case class MakeDate(
   override def nullable: Boolean = if (failOnError) children.exists(_.nullable) else true
 
   override def nullSafeEval(year: Any, month: Any, day: Any): Any = {
-    try {
-      val ld = LocalDate.of(year.asInstanceOf[Int], month.asInstanceOf[Int], day.asInstanceOf[Int])
-      localDateToDays(ld)
-    } catch {
-      case e: java.time.DateTimeException =>
-        if (failOnError) throw QueryExecutionErrors.ansiDateTimeArgumentOutOfRange(e) else null
+    if (failOnError) {
+      DateTimeExpressionUtils.makeDateExact(
+        year.asInstanceOf[Int], month.asInstanceOf[Int], day.asInstanceOf[Int])
+    } else {
+      try {
+        val ld = LocalDate.of(
+          year.asInstanceOf[Int], month.asInstanceOf[Int], day.asInstanceOf[Int])
+        localDateToDays(ld)
+      } catch {
+        case _: java.time.DateTimeException => null
+      }
     }
   }
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
-    val dtu = DateTimeUtils.getClass.getName.stripSuffix("$")
-    val failOnErrorBranch = if (failOnError) {
-      "throw QueryExecutionErrors.ansiDateTimeArgumentOutOfRange(e);"
+    if (failOnError) {
+      val utils = classOf[DateTimeExpressionUtils].getName
+      defineCodeGen(ctx, ev, (year, month, day) =>
+        s"$utils.makeDateExact($year, $month, $day)")
     } else {
-      s"${ev.isNull} = true;"
+      val dtu = DateTimeUtils.getClass.getName.stripSuffix("$")
+      nullSafeCodeGen(ctx, ev, (year, month, day) => {
+        s"""
+        try {
+          ${ev.value} = $dtu.localDateToDays(java.time.LocalDate.of($year, $month, $day));
+        } catch (java.time.DateTimeException e) {
+          ${ev.isNull} = true;
+        }"""
+      })
     }
-    nullSafeCodeGen(ctx, ev, (year, month, day) => {
-      s"""
-      try {
-        ${ev.value} = $dtu.localDateToDays(java.time.LocalDate.of($year, $month, $day));
-      } catch (java.time.DateTimeException e) {
-        $failOnErrorBranch
-      }"""
-    })
   }
 
   override def prettyName: String = "make_date"
@@ -2929,33 +2945,17 @@ case class MakeTimestamp(
       min: Int,
       secAndMicros: Decimal,
       zoneId: ZoneId): Any = {
-    try {
-      assert(secAndMicros.scale == 6,
-        s"Seconds fraction must have 6 digits for microseconds but got ${secAndMicros.scale}")
-      val unscaledSecFrac = secAndMicros.toUnscaledLong
-      val totalMicros = unscaledSecFrac.toInt // 8 digits cannot overflow Int
-      val seconds = Math.floorDiv(totalMicros, MICROS_PER_SECOND.toInt)
-      val nanos = Math.floorMod(totalMicros, MICROS_PER_SECOND.toInt) * NANOS_PER_MICROS.toInt
-      val ldt = if (seconds == 60) {
-        if (nanos == 0) {
-          // This case of sec = 60 and nanos = 0 is supported for compatibility with PostgreSQL
-          LocalDateTime.of(year, month, day, hour, min, 0, 0).plusMinutes(1)
-        } else {
-          throw QueryExecutionErrors.invalidFractionOfSecondError(secAndMicros.toDouble)
-        }
-      } else {
-        LocalDateTime.of(year, month, day, hour, min, seconds, nanos)
+    val timestampNTZ = dataType != TimestampType
+    if (failOnError) {
+      DateTimeExpressionUtils.makeTimestampExact(
+        year, month, day, hour, min, secAndMicros, zoneId, timestampNTZ)
+    } else {
+      try {
+        DateTimeExpressionUtils.makeTimestampMicros(
+          year, month, day, hour, min, secAndMicros, zoneId, timestampNTZ)
+      } catch {
+        case _: DateTimeException => null
       }
-      if (dataType == TimestampType) {
-        instantToMicros(ldt.atZone(zoneId).toInstant)
-      } else {
-        localDateTimeToMicros(ldt)
-      }
-    } catch {
-      case e: SparkDateTimeException if failOnError => throw e
-      case e: DateTimeException if failOnError =>
-        throw QueryExecutionErrors.ansiDateTimeArgumentOutOfRange(e)
-      case _: DateTimeException => null
     }
   }
 
@@ -2982,47 +2982,23 @@ case class MakeTimestamp(
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
     val dtu = DateTimeUtils.getClass.getName.stripSuffix("$")
+    val utils = classOf[DateTimeExpressionUtils].getName
     val zid = ctx.addReferenceObj("zoneId", zoneId, classOf[ZoneId].getName)
-    val d = Decimal.getClass.getName.stripSuffix("$")
-    val failOnErrorBranch = if (failOnError) {
-      "throw QueryExecutionErrors.ansiDateTimeArgumentOutOfRange(e);"
-    } else {
-      s"${ev.isNull} = true;"
-    }
-    val failOnSparkErrorBranch = if (failOnError) "throw e;" else s"${ev.isNull} = true;"
+    val timestampNTZ = dataType != TimestampType
     nullSafeCodeGen(ctx, ev, (year, month, day, hour, min, secAndNanos, timezone) => {
-      val zoneId = timezone.map(tz => s"$dtu.getZoneId(${tz}.toString())").getOrElse(zid)
-      val toMicrosCode = if (dataType == TimestampType) {
-        s"""
-           |java.time.Instant instant = ldt.atZone($zoneId).toInstant();
-           |${ev.value} = $dtu.instantToMicros(instant);
-           |""".stripMargin
+      val zoneIdExpr = timezone.map(tz => s"$dtu.getZoneId(${tz}.toString())").getOrElse(zid)
+      if (failOnError) {
+        s"${ev.value} = $utils.makeTimestampExact(" +
+          s"$year, $month, $day, $hour, $min, $secAndNanos, $zoneIdExpr, $timestampNTZ);"
       } else {
-        s"${ev.value} = $dtu.localDateTimeToMicros(ldt);"
+        s"""
+        try {
+          ${ev.value} = $utils.makeTimestampMicros(
+            $year, $month, $day, $hour, $min, $secAndNanos, $zoneIdExpr, $timestampNTZ);
+        } catch (java.time.DateTimeException e) {
+          ${ev.isNull} = true;
+        }"""
       }
-      s"""
-      try {
-        org.apache.spark.sql.types.Decimal secFloor = $secAndNanos.floor();
-        org.apache.spark.sql.types.Decimal nanosPerSec = $d$$.MODULE$$.apply(1000000000L, 10, 0);
-        int nanos = (($secAndNanos.$$minus(secFloor)).$$times(nanosPerSec)).toInt();
-        int seconds = secFloor.toInt();
-        java.time.LocalDateTime ldt;
-        if (seconds == 60) {
-          if (nanos == 0) {
-            ldt = java.time.LocalDateTime.of(
-              $year, $month, $day, $hour, $min, 0, 0).plusMinutes(1);
-          } else {
-            throw QueryExecutionErrors.invalidFractionOfSecondError($secAndNanos.toDouble());
-          }
-        } else {
-          ldt = java.time.LocalDateTime.of($year, $month, $day, $hour, $min, seconds, nanos);
-        }
-        $toMicrosCode
-      } catch (org.apache.spark.SparkDateTimeException e) {
-        $failOnSparkErrorBranch
-      } catch (java.time.DateTimeException e) {
-        $failOnErrorBranch
-      }"""
     })
   }
 
@@ -3895,5 +3871,201 @@ case class TimestampDiff(
       newLeft: Expression,
       newRight: Expression): TimestampDiff = {
     copy(startTimestamp = newLeft, endTimestamp = newRight)
+  }
+}
+
+/**
+ * Aligns a timestamp to the start of a fixed-size interval bucket.
+ *
+ * Returns the start of the half-open bucket [start, start + bucketSize) containing ts.
+ * For TIMESTAMP_NTZ, bucketing is performed in UTC. For TIMESTAMP, year-month
+ * interval buckets and calendar-day components of day-time interval buckets align
+ * to the session time zone.
+ */
+case class TimeBucket(
+    bucketSize: Expression,
+    ts: Expression,
+    originTs: Expression,
+    timeZoneId: Option[String] = None)
+  extends TernaryExpression with ExpectsInputTypes with TimeZoneAwareExpression {
+
+  override def nullIntolerant: Boolean = true
+
+  override def first: Expression = bucketSize
+  override def second: Expression = ts
+  override def third: Expression = originTs
+
+  override def withTimeZone(timeZoneId: String): TimeBucket =
+    copy(timeZoneId = Option(timeZoneId))
+
+  @transient private lazy val zoneIdInEval: ZoneId = zoneIdForType(ts.dataType)
+
+  def this(bucketSize: Expression, ts: Expression, originTs: Expression) =
+    this(bucketSize, ts, originTs, None)
+
+  override def inputTypes: Seq[AbstractDataType] = Seq(
+    TypeCollection(DayTimeIntervalType, YearMonthIntervalType),
+    AnyTimestampType,
+    AnyTimestampType)
+
+  override def dataType: DataType = ts.dataType
+
+  override def checkInputDataTypes(): TypeCheckResult = {
+    val defaultCheck = super.checkInputDataTypes()
+    if (defaultCheck.isFailure) return defaultCheck
+
+    if (!bucketSize.foldable) {
+      return DataTypeMismatch(
+        errorSubClass = "NON_FOLDABLE_INPUT",
+        messageParameters = Map(
+          "inputName" -> toSQLId("bucketSize"),
+          "inputType" -> toSQLType(bucketSize.dataType),
+          "inputExpr" -> toSQLExpr(bucketSize)))
+    }
+
+    val bucketSizeValue = bucketSize.eval()
+    if (bucketSizeValue != null) {
+      val isNonPositive = bucketSize.dataType match {
+        case _: DayTimeIntervalType => bucketSizeValue.asInstanceOf[Long] <= 0
+        case _: YearMonthIntervalType => bucketSizeValue.asInstanceOf[Int] <= 0
+        case other => throw SparkException.internalError(
+          s"Unexpected bucketSize type: $other")
+      }
+      if (isNonPositive) {
+        return DataTypeMismatch(
+          errorSubClass = "VALUE_OUT_OF_RANGE",
+          messageParameters = Map(
+            "exprName" -> toSQLId("bucketSize"),
+            "valueRange" -> "(0, inf)",
+            "currentValue" -> toSQLValue(bucketSizeValue, bucketSize.dataType)))
+      }
+    }
+
+    if (!originTs.foldable) {
+      return DataTypeMismatch(
+        errorSubClass = "NON_FOLDABLE_INPUT",
+        messageParameters = Map(
+          "inputName" -> toSQLId("origin"),
+          "inputType" -> toSQLType(originTs.dataType),
+          "inputExpr" -> toSQLExpr(originTs)))
+    }
+
+    if (ts.dataType != originTs.dataType) {
+      return DataTypeMismatch(
+        errorSubClass = "UNEXPECTED_INPUT_TYPE",
+        messageParameters = Map(
+          "paramIndex" -> ordinalNumber(2),
+          "requiredType" -> toSQLType(ts.dataType),
+          "inputSql" -> toSQLExpr(originTs),
+          "inputType" -> toSQLType(originTs.dataType)))
+    }
+
+    TypeCheckSuccess
+  }
+
+  override def nullSafeEval(bucketSizeVal: Any, tsVal: Any, originVal: Any): Any = {
+    first.dataType match {
+      case _: DayTimeIntervalType =>
+        DateTimeUtils.timeBucketDTInterval(
+          bucketSizeVal.asInstanceOf[Long], tsVal.asInstanceOf[Long],
+          originVal.asInstanceOf[Long], zoneIdInEval)
+      case _: YearMonthIntervalType =>
+        DateTimeUtils.timeBucketYMInterval(
+          bucketSizeVal.asInstanceOf[Int], tsVal.asInstanceOf[Long],
+          originVal.asInstanceOf[Long], zoneIdInEval)
+      case other => throw SparkException.internalError(
+        s"Unexpected bucketSize type: $other")
+    }
+  }
+
+  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    val dtu = DateTimeUtils.getClass.getName.stripSuffix("$")
+    val zid = ctx.addReferenceObj("zoneId", zoneIdInEval, classOf[ZoneId].getName)
+    first.dataType match {
+      case _: DayTimeIntervalType =>
+        defineCodeGen(ctx, ev, (bucketSizeCode, tsCode, originCode) =>
+          s"$dtu.timeBucketDTInterval($bucketSizeCode, $tsCode, $originCode, $zid)")
+      case _: YearMonthIntervalType =>
+        defineCodeGen(ctx, ev, (bucketSizeCode, tsCode, originCode) =>
+          s"$dtu.timeBucketYMInterval($bucketSizeCode, $tsCode, $originCode, $zid)")
+      case other => throw SparkException.internalError(
+        s"Unexpected bucketSize type: $other")
+    }
+  }
+
+  override def prettyName: String = "time_bucket"
+
+  override protected def withNewChildrenInternal(
+      newFirst: Expression, newSecond: Expression, newThird: Expression): TimeBucket =
+    copy(bucketSize = newFirst, ts = newSecond, originTs = newThird)
+}
+
+// scalastyle:off line.size.limit
+@ExpressionDescription(
+  usage = """
+    _FUNC_(bucketSize, ts[, origin]) - Returns the start of the bucket that `ts` falls into,
+      where buckets are defined by the given `bucketSize` interval aligned to optional `origin`.
+      For `TIMESTAMP_NTZ`, bucketing is performed in UTC. For `TIMESTAMP`, year-month
+      interval buckets and calendar-day components of day-time interval buckets align
+      to the session time zone.
+  """,
+  arguments = """
+    Arguments:
+      * bucketSize - A day-time or year-month interval defining the bucket size. Must be positive and foldable.
+      * ts - A TIMESTAMP or TIMESTAMP_NTZ value to bucket.
+      * origin - Optional TIMESTAMP or TIMESTAMP_NTZ alignment anchor. Defaults to 1970-01-01 00:00:00. Must be the same type as ts and must be foldable.
+  """,
+  examples = """
+    Examples:
+      > SELECT _FUNC_(INTERVAL '15' MINUTE, TIMESTAMP '2024-01-01 11:27:00', TIMESTAMP '1970-01-01 00:00:00');
+       2024-01-01 11:15:00
+      > SELECT _FUNC_(INTERVAL '1' HOUR, TIMESTAMP '2024-01-01 11:27:00');
+       2024-01-01 11:00:00
+      > SELECT _FUNC_(INTERVAL '1' MONTH, TIMESTAMP '2024-07-20 14:30:00', TIMESTAMP '2024-06-15 09:00:00');
+       2024-07-15 09:00:00
+  """,
+  since = "4.2.0",
+  group = "datetime_funcs")
+// scalastyle:on line.size.limit
+object TimeBucketExpressionBuilder extends ExpressionBuilder {
+  private def retypeNull(e: Expression, dt: DataType): Expression = e match {
+    case Literal(null, NullType) => Literal(null, dt)
+    case _ => e
+  }
+
+  // Default origin: 1970-01-01 00:00:00 in the session time zone for TIMESTAMP, and
+  // EPOCH (1970-01-01 00:00:00 UTC) for TIMESTAMP_NTZ.
+  private def defaultOrigin(tsType: DataType): Literal = tsType match {
+    case TimestampType =>
+      val zoneId = DateTimeUtils.getZoneId(SQLConf.get.sessionLocalTimeZone)
+      Literal(DateTimeUtils.daysToMicros(0, zoneId), TimestampType)
+    case _ => Literal(0L, tsType)
+  }
+
+  override def build(funcName: String, expressions: Seq[Expression]): Expression = {
+    expressions match {
+      case Seq(rawBucketSize, rawTs) =>
+        val bucketSize = retypeNull(rawBucketSize, DayTimeIntervalType())
+        // Fall back to TimestampType for bad ts types; ExpectsInputTypes will report it.
+        val tsType = rawTs.dataType match {
+          case t if AnyTimestampType.acceptsType(t) => t
+          case _ => TimestampType
+        }
+        val ts = retypeNull(rawTs, tsType)
+        TimeBucket(bucketSize, ts, defaultOrigin(tsType))
+      case Seq(rawBucketSize, rawTs, rawOrigin) =>
+        val bucketSize = retypeNull(rawBucketSize, DayTimeIntervalType())
+        val tsType = (rawTs.dataType, rawOrigin.dataType) match {
+          case (NullType, t) if AnyTimestampType.acceptsType(t) => t
+          case (NullType, _) => TimestampType
+          case (t, _) => t
+        }
+        val ts = retypeNull(rawTs, tsType)
+        val originTs = retypeNull(rawOrigin, tsType)
+        TimeBucket(bucketSize, ts, originTs)
+      case _ =>
+        throw QueryCompilationErrors.wrongNumArgsError(
+          funcName, Seq(2, 3), expressions.length)
+    }
   }
 }

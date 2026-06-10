@@ -30,11 +30,13 @@ import org.mockito.ArgumentMatchers._
 import org.mockito.Mockito._
 
 import org.apache.spark.{SparkException, SparkIllegalArgumentException, SparkSQLException}
-import org.apache.spark.sql.{AnalysisException, DataFrame, Observation, QueryTest, Row}
+import org.apache.spark.sql.{AnalysisException, DataFrame, Observation, Row}
 import org.apache.spark.sql.catalyst.{analysis, TableIdentifier}
 import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
 import org.apache.spark.sql.catalyst.plans.logical.ShowCreateTable
 import org.apache.spark.sql.catalyst.util.{CaseInsensitiveMap, CharVarcharUtils, DateTimeTestUtils}
+import org.apache.spark.sql.connector.expressions.{Expression => V2Expression, FieldReference}
+import org.apache.spark.sql.connector.expressions.filter.{AlwaysFalse, AlwaysTrue, Predicate}
 import org.apache.spark.sql.execution.{DataSourceScanExec, ExtendedMode, ProjectExec}
 import org.apache.spark.sql.execution.command.{ExplainCommand, ShowCreateTableCommand}
 import org.apache.spark.sql.execution.datasources.{LogicalRelation, LogicalRelationWithTable}
@@ -47,7 +49,7 @@ import org.apache.spark.sql.test.SharedSparkSession
 import org.apache.spark.sql.types._
 import org.apache.spark.util.Utils
 
-class JDBCSuite extends QueryTest with SharedSparkSession {
+class JDBCSuite extends SharedSparkSession {
   import testImplicits._
 
   val url = "jdbc:h2:mem:testdb0"
@@ -890,6 +892,22 @@ class JDBCSuite extends QueryTest with SharedSparkSession {
           """OR ("col0" IS NULL AND 'abc' IS NULL))) AND ("col1" = 'def')""")
     }
     assert(doCompileFilter(EqualTo("col0.nested", 3)).isEmpty)
+  }
+
+  test("SPARK-53454: AlwaysTrue/AlwaysFalse compile to portable SQL in JDBCSQLBuilder") {
+    val dialect = JdbcDialects.get("jdbc:")
+    assert(dialect.compileExpression(new AlwaysTrue).get === "(1 = 1)")
+    assert(dialect.compileExpression(new AlwaysFalse).get === "(1 = 0)")
+
+    // The result must stay valid when AlwaysTrue/AlwaysFalse is nested as an operand
+    // of a larger expression, not just as a standalone WHERE predicate. Without the
+    // surrounding parentheses the bare `1 = 1` would inline into invalid SQL such as
+    // `a = 1 = 1`.
+    val ref = FieldReference("a")
+    val eqTrue = new Predicate("=", Array[V2Expression](ref, new AlwaysTrue))
+    val eqFalse = new Predicate("=", Array[V2Expression](ref, new AlwaysFalse))
+    assert(dialect.compileExpression(eqTrue).get === "\"a\" = (1 = 1)")
+    assert(dialect.compileExpression(eqFalse).get === "\"a\" = (1 = 0)")
   }
 
   test("Dialect unregister") {

@@ -129,6 +129,7 @@ private[hive] class HiveClientImpl(
     case hive.v3_1 => new Shim_v3_1()
     case hive.v4_0 => new Shim_v4_0()
     case hive.v4_1 => new Shim_v4_1()
+    case hive.v4_2 => new Shim_v4_2()
   }
 
   // Create an internal session state for this HiveClientImpl.
@@ -1163,7 +1164,7 @@ private[hive] object HiveClientImpl extends Logging {
     catalogTableType match {
       case CatalogTableType.EXTERNAL => HiveTableType.EXTERNAL_TABLE
       case CatalogTableType.MANAGED => HiveTableType.MANAGED_TABLE
-      case CatalogTableType.VIEW => HiveTableType.VIRTUAL_VIEW
+      case t if CatalogTable.isViewLike(t) => HiveTableType.VIRTUAL_VIEW
       case t =>
         throw new IllegalArgumentException(
           s"Unknown table type is found at toHiveTableType: $t")
