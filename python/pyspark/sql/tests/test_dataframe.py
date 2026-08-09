@@ -140,8 +140,8 @@ class DataFrameTestsMixin:
         )
         df2 = self.spark.range(10).select(col("id").alias("x"))
         df3 = df1.join(df2, df1.x == df2.x).select(df1.y)
-        self.assertTrue(df3.columns, ["y"])
-        self.assertTrue(df3.count() == 9)
+        self.assertEqual(df3.columns, ["y"])
+        self.assertEqual(df3.count(), 9)
 
     def test_duplicated_column_names(self):
         df = self.spark.createDataFrame([(1, 2)], ["c", "c"])
@@ -259,6 +259,20 @@ class DataFrameTestsMixin:
             exception=pe.exception,
             errorClass="NOT_EXPECTED_TYPE",
             messageParameters={"expected_type": "dict", "arg_name": "colsMap", "arg_type": "tuple"},
+        )
+
+    def test_sort_ascending_invalid_type(self):
+        df = self.spark.createDataFrame([("Alice", 10)], ["name", "age"])
+        with self.assertRaises(PySparkTypeError) as pe:
+            df.sort("age", ascending="asc")
+        self.check_error(
+            exception=pe.exception,
+            errorClass="NOT_EXPECTED_TYPE",
+            messageParameters={
+                "expected_type": "bool, int or list",
+                "arg_name": "ascending",
+                "arg_type": "str",
+            },
         )
 
     def test_with_columns_renamed_with_duplicated_names(self):

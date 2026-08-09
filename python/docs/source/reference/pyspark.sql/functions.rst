@@ -177,6 +177,7 @@ String Functions
     find_in_set
     format_number
     format_string
+    from_base32
     initcap
     instr
     is_valid_utf8
@@ -216,6 +217,7 @@ String Functions
     substr
     substring
     substring_index
+    to_base32
     to_binary
     to_char
     to_number
@@ -299,6 +301,7 @@ Date and Timestamp Functions
     timestamp_diff
     timestamp_micros
     timestamp_millis
+    timestamp_nanos
     timestamp_seconds
     time_bucket
     time_diff
@@ -327,6 +330,7 @@ Date and Timestamp Functions
     unix_date
     unix_micros
     unix_millis
+    unix_nanos
     unix_seconds
     unix_timestamp
     weekday
@@ -347,6 +351,8 @@ Hash Functions
     sha
     sha1
     sha2
+    xxh3_128
+    xxh3_64
     xxhash64
 
 
@@ -585,6 +591,7 @@ JSON Functions
     json_array_length
     json_object_keys
     json_tuple
+    json_typeof
     schema_of_json
     to_json
 
@@ -600,7 +607,14 @@ VARIANT Functions
     schema_of_variant
     schema_of_variant_agg
     try_variant_get
+    variant_array_append
+    try_variant_array_append
+    variant_delete
     variant_get
+    variant_insert
+    try_variant_insert
+    variant_set
+    try_variant_set
     try_parse_json
     to_variant_object
 
@@ -652,6 +666,7 @@ Misc Functions
     current_path
     current_schema
     current_user
+    hmac
     input_file_block_length
     input_file_block_start
     input_file_name

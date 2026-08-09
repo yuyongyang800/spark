@@ -7,6 +7,7 @@ struct<keyword:string,reserved:boolean>
 ADD	false
 AFTER	false
 AGGREGATE	false
+ALIGN	false
 ALL	true
 ALTER	false
 ALWAYS	false
@@ -15,21 +16,28 @@ AND	true
 ANTI	false
 ANY	true
 ANY_VALUE	false
+APPLY	false
 APPROX	false
 ARCHIVE	false
 ARRAY	false
 AS	true
 ASC	false
 ASENSITIVE	false
+ASOF	false
 AT	false
 ATOMIC	false
 AUTHORIZATION	true
+AUTO	false
 BEGIN	false
 BERNOULLI	false
 BETWEEN	false
 BIGINT	false
+BIN	false
 BINARY	false
 BINDING	false
+BIN_DISTRIBUTE_RATIO	false
+BIN_END	false
+BIN_START	false
 BOOLEAN	false
 BOTH	true
 BUCKET	false
@@ -44,6 +52,7 @@ CASE	true
 CAST	true
 CATALOG	false
 CATALOGS	false
+CDC	false
 CHANGE	false
 CHANGES	false
 CHAR	false
@@ -123,6 +132,7 @@ ELSE	true
 ELSEIF	false
 END	true
 ENFORCED	false
+ERROR	false
 ESCAPE	true
 ESCAPED	false
 EVOLUTION	false
@@ -167,6 +177,7 @@ GROUP	true
 GROUPING	false
 HANDLER	false
 HAVING	true
+HISTORY	false
 HOUR	false
 HOURS	false
 IDENTIFIED	false
@@ -200,6 +211,7 @@ ITEMS	false
 ITERATE	false
 JOIN	true
 JSON	false
+JSON_TABLE	false
 KEY	false
 KEYS	false
 LANGUAGE	false
@@ -216,6 +228,7 @@ LINES	false
 LIST	false
 LOAD	false
 LOCAL	false
+LOCALTIME	true
 LOCATION	false
 LOCK	false
 LOCKS	false
@@ -225,6 +238,7 @@ LOOP	false
 MACRO	false
 MAP	false
 MATCHED	false
+MATCH_CONDITION	false
 MATERIALIZED	false
 MAX	false
 MEASURE	false
@@ -265,6 +279,7 @@ OPTION	false
 OPTIONS	false
 OR	true
 ORDER	true
+ORDINALITY	false
 OUT	false
 OUTER	true
 OUTPUTFORMAT	false
@@ -321,6 +336,7 @@ ROLLBACK	false
 ROLLUP	false
 ROW	false
 ROWS	false
+SCD	false
 SCHEMA	false
 SCHEMAS	false
 SECOND	false
@@ -329,6 +345,7 @@ SECURITY	false
 SELECT	true
 SEMI	false
 SEPARATED	false
+SEQUENCE	false
 SERDE	false
 SERDEPROPERTIES	false
 SESSION_USER	true
@@ -380,6 +397,7 @@ TIMESTAMP_NTZ	false
 TINYINT	false
 TO	true
 TOUCH	false
+TRACK	false
 TRAILING	true
 TRANSACTION	false
 TRANSACTIONS	false
@@ -392,10 +410,12 @@ TYPE	false
 UNARCHIVE	false
 UNBOUNDED	false
 UNCACHE	false
+UNIFORM	false
 UNION	true
 UNIQUE	true
 UNKNOWN	true
 UNLOCK	false
+UNNEST	false
 UNPIVOT	false
 UNSET	false
 UNTIL	false
@@ -419,6 +439,7 @@ WEEKS	false
 WHEN	true
 WHERE	true
 WHILE	false
+WIDTH	false
 WINDOW	false
 WITH	true
 WITHIN	true
@@ -482,6 +503,7 @@ JOIN
 LATERAL
 LEADING
 LEFT
+LOCALTIME
 NATURAL
 NOT
 NULL
